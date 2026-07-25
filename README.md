@@ -302,11 +302,50 @@ Schwab is optional. The server can boot and run Robinhood workflows without any 
 
 Recommended clone flow:
 
-1. Copy the project files, excluding local runtime files ignored by `.gitignore`.
-2. Create a Python environment.
-3. Run the fresh-user setup helper:
+1. Clone the repository:
 
 ```bash
+git clone https://github.com/DreadFoxKaito/DreadFoxTrader.1.0.git
+cd DreadFoxTrader.1.0
+```
+
+2. Run the installer:
+
+```bash
+./install.sh
+```
+
+The installer installs supported Linux system packages when possible, creates `.venv/`,
+installs `requirements.txt`, generates local `.env` settings, and initializes the database.
+
+Start the app after installation:
+
+```bash
+./run_app.sh
+```
+
+Optional installer modes:
+
+```bash
+./install.sh --start
+./install.sh --systemd-user
+./install.sh --clean-runtime
+./install.sh --with-sound
+./install.sh --with-ai
+./install.sh --with-strategy
+```
+
+On rpm-ostree systems such as Bazzite, install host packages with `rpm-ostree`, reboot, then rerun:
+
+```bash
+./install.sh --no-system-packages
+```
+
+Manual setup is still supported:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
 python setup_new_user.py --install-deps --init-db
 ```
 
@@ -316,22 +355,22 @@ If the normal app entrypoint is already importable, this shortcut also runs the 
 python -m app.main --setup-new-user
 ```
 
-4. Leave all `SCHWAB_*` values blank for Robinhood-only installs.
-5. Do not copy `app/data/`, `.env`, `.venv/`, `.idea/`, run logs, or broker session pickle files from another machine/user.
-6. If a copied folder contains old runtime state for another user, run:
+3. Leave all `SCHWAB_*` values blank for Robinhood-only installs.
+4. Do not copy `app/data/`, `.env`, `.venv/`, `.idea/`, run logs, or broker session pickle files from another machine/user.
+5. If a copied folder contains old runtime state for another user, run:
 
 ```bash
-python setup_new_user.py --clean-runtime --yes --init-db
+./install.sh --clean-runtime
 ```
 
-7. Start the server with HTTP if no local TLS certs are configured:
+6. Start the server with HTTP if no local TLS certs are configured:
 
 ```bash
-python -m app.main --http
+./run_app.sh
 ```
 
-8. Open `/broker` and connect Robinhood using the Robinhood form.
-9. Configure Schwab from `/broker` only on machines that will use Schwab.
+7. Open `/broker` and connect Robinhood using the Robinhood form.
+8. Configure Schwab from `/broker` only on machines that will use Schwab.
 
 Generate a new secret with:
 

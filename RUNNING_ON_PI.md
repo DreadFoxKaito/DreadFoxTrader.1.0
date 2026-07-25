@@ -15,28 +15,30 @@ Unpack the clean project archive, then enter the project directory:
 
 ```bash
 mkdir -p ~/apps
-tar -xzf DreadFoxTrader.1.0-clean-20260725.tar.gz -C ~/apps
+git clone https://github.com/DreadFoxKaito/DreadFoxTrader.1.0.git ~/apps/DreadFoxTrader.1.0
 cd ~/apps/DreadFoxTrader.1.0
 ```
 
-Create a local virtual environment inside the project:
+Run the installer:
+
+```bash
+./install.sh
+```
+
+Start the app:
+
+```bash
+./run_app.sh
+```
+
+The manual setup path is still available:
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -r requirements.txt
-```
-
-Initialize the local config and database:
-
-```bash
 python setup_new_user.py --init-db
-```
-
-Start the app:
-
-```bash
 python -m app.main --http --host 0.0.0.0 --port 8000
 ```
 
