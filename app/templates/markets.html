@@ -1,0 +1,1042 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="container">
+  <div class="grid">
+    <div class="card" style="grid-column: span 12;">
+      <div class="row" style="justify-content:space-between; align-items:flex-end;">
+        <div>
+          <h3>Markets Research</h3>
+          <div class="small">Build saved indicator rules, scan the watchlist, and run the Markets backtest from the same enabled rule set.</div>
+        </div>
+        <div class="row">
+          <div>
+            <label class="small" for="markets_timeframe">Timeframe</label>
+            <select id="markets_timeframe" name="timeframe">
+              <option value="5m">5m</option>
+              <option value="10m">10m</option>
+              <option value="30m">30m</option>
+              <option value="1h" selected>1h</option>
+              <option value="1d">1d</option>
+            </select>
+          </div>
+          <div>
+            <label class="small" for="markets_symbol">Analyze Ticker</label>
+            <input id="markets_symbol" name="symbol" placeholder="AAPL" style="width:120px;" />
+          </div>
+          <div>
+            <label class="small" for="markets_news_limit">News / ticker</label>
+            <select id="markets_news_limit" name="limit">
+              <option value="3">3</option>
+              <option value="5" selected>5</option>
+              <option value="8">8</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="grid-column: span 12;">
+      <h3>Indicator Rules</h3>
+      <div class="small">This mirrors the IndicatorForge rule surface for saved Markets rules. Scanner and backtest both use the enabled saved rules below.</div>
+      <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:10px; margin-top:10px;">
+        <div class="card" style="padding:10px; grid-column: 1 / -1;">
+          <div class="small"><b>Add Moving Average Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="ma" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <select id="markets_ma_mode_select" name="ma_mode">
+              <option value="single" selected>Single Line Mode</option>
+              <option value="ribbon">Ribbon Mode</option>
+            </select>
+
+            <div id="markets_ma_single_wrap" class="row" style="width:100%;">
+              <select name="ma_type">
+                <option value="sma" selected>SMA</option>
+                <option value="ema">EMA</option>
+              </select>
+              <input name="ma_length" type="number" min="2" step="1" value="30" placeholder="Length" style="width:100px;" />
+              <select name="ma_buy_relation">
+                <option value="above">Buy: price above line</option>
+                <option value="below">Buy: price below line</option>
+                <option value="hold">Buy: hold</option>
+              </select>
+              <select name="ma_sell_relation">
+                <option value="above">Sell: price above line</option>
+                <option value="below">Sell: price below line</option>
+                <option value="hold">Sell: hold</option>
+              </select>
+              <label class="small"><input type="checkbox" name="ma_track_derivative" /> Track derivative</label>
+              <input name="ma_buy_derivative_min" type="number" step="0.0001" placeholder="dLine buy >=" style="width:130px;" />
+              <input name="ma_sell_derivative_max" type="number" step="0.0001" placeholder="dLine sell <=" style="width:130px;" />
+              <label class="small"><input type="checkbox" name="ma_unless_enabled" /> Use Unless Override</label>
+              <select name="ma_unless_relation">
+                <option value="above">Unless line is above</option>
+                <option value="below">Unless line is below</option>
+              </select>
+              <select name="ma_unless_type">
+                <option value="sma">Unless target SMA</option>
+                <option value="ema">Unless target EMA</option>
+              </select>
+              <input name="ma_unless_length" type="number" min="2" step="1" value="78" placeholder="Unless length" style="width:120px;" />
+              <select name="ma_unless_action">
+                <option value="sell">Override -> Sell</option>
+                <option value="buy">Override -> Buy</option>
+              </select>
+            </div>
+
+            <div id="markets_ma_ribbon_wrap" class="grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px; width:100%; display:none;">
+              <div class="card" style="padding:8px;">
+                <div class="small"><b>Short</b></div>
+                <div class="row" style="margin-top:8px;">
+                  <select name="ma_ribbon_short_type">
+                    <option value="sma" selected>SMA</option>
+                    <option value="ema">EMA</option>
+                  </select>
+                  <input name="ma_ribbon_short_length" type="number" min="2" step="1" value="30" placeholder="Length" style="width:100px;" />
+                  <select name="ma_ribbon_short_above">
+                    <option value="buy">Above -> Buy</option>
+                    <option value="sell">Above -> Sell</option>
+                    <option value="hold">Above -> Hold</option>
+                  </select>
+                  <select name="ma_ribbon_short_below">
+                    <option value="hold">Below -> Hold</option>
+                    <option value="buy">Below -> Buy</option>
+                    <option value="sell">Below -> Sell</option>
+                  </select>
+                </div>
+              </div>
+              <div class="card" style="padding:8px;">
+                <div class="small"><b>Medium</b></div>
+                <div class="row" style="margin-top:8px;">
+                  <select name="ma_ribbon_medium_type">
+                    <option value="sma" selected>SMA</option>
+                    <option value="ema">EMA</option>
+                  </select>
+                  <input name="ma_ribbon_medium_length" type="number" min="2" step="1" value="78" placeholder="Length" style="width:100px;" />
+                  <select name="ma_ribbon_medium_above">
+                    <option value="buy">Above -> Buy</option>
+                    <option value="sell">Above -> Sell</option>
+                    <option value="hold">Above -> Hold</option>
+                  </select>
+                  <select name="ma_ribbon_medium_below">
+                    <option value="hold">Below -> Hold</option>
+                    <option value="buy">Below -> Buy</option>
+                    <option value="sell">Below -> Sell</option>
+                  </select>
+                </div>
+              </div>
+              <div class="card" style="padding:8px;">
+                <div class="small"><b>Long</b></div>
+                <div class="row" style="margin-top:8px;">
+                  <select name="ma_ribbon_long_type">
+                    <option value="sma" selected>SMA</option>
+                    <option value="ema">EMA</option>
+                  </select>
+                  <input name="ma_ribbon_long_length" type="number" min="2" step="1" value="190" placeholder="Length" style="width:100px;" />
+                  <select name="ma_ribbon_long_above">
+                    <option value="buy">Above -> Buy</option>
+                    <option value="sell">Above -> Sell</option>
+                    <option value="hold">Above -> Hold</option>
+                  </select>
+                  <select name="ma_ribbon_long_below">
+                    <option value="hold">Below -> Hold</option>
+                    <option value="buy">Below -> Buy</option>
+                    <option value="sell">Below -> Sell</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="small" style="width:100%;">Single mode saves SMA/EMA rules. Ribbon mode saves the three-level MA ribbon logic used by IndicatorForge.</div>
+            <button class="btn primary" type="submit">Save Moving Average Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add RSI Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="rsi" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="rsi_oversold" type="number" step="0.1" value="30" placeholder="Oversold level" style="width:130px;" />
+            <select name="rsi_oversold_relation">
+              <option value="below">Oversold: below</option>
+              <option value="above">Oversold: above</option>
+            </select>
+            <select name="rsi_oversold_action">
+              <option value="buy">Oversold -> Buy</option>
+              <option value="sell">Oversold -> Sell</option>
+              <option value="hold">Oversold -> Hold</option>
+            </select>
+            <input name="rsi_overbought" type="number" step="0.1" value="70" placeholder="Overbought level" style="width:140px;" />
+            <select name="rsi_overbought_relation">
+              <option value="above">Overbought: above</option>
+              <option value="below">Overbought: below</option>
+            </select>
+            <select name="rsi_overbought_action">
+              <option value="sell">Overbought -> Sell</option>
+              <option value="buy">Overbought -> Buy</option>
+              <option value="hold">Overbought -> Hold</option>
+            </select>
+            <label class="small"><input id="markets_rsi_override_on" type="checkbox" name="rsi_signal_override_enabled" /> Allow RSI to override selected saved rule signals</label>
+            <div id="markets_rsi_override_wrap" style="width:100%; display:none;">
+              <label class="small">RSI Override Scope</label>
+              <select name="rsi_signal_override_scope">
+                <option value="both" selected>Overwrite BUY and SELL</option>
+                <option value="buy">Overwrite BUY only</option>
+                <option value="sell">Overwrite SELL only</option>
+              </select>
+              <label class="small">RSI Override Targets</label>
+              <select name="rsi_signal_override_targets" multiple size="4" style="width:100%;">
+                {% for entry in rsi_override_target_entries %}
+                <option value="{{ entry.id }}">{{ entry.label }}</option>
+                {% endfor %}
+              </select>
+              <div class="small">Scope controls whether RSI can overwrite BUY checks, SELL checks, or both on the selected targets.</div>
+            </div>
+            <button class="btn primary" type="submit">Save RSI Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add MACD Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="macd" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <select id="markets_macd_mode_select" name="macd_mode">
+              <option value="signal_cross">1. Signal Cross (classic)</option>
+              <option value="cross_regime">2. Cross + Regime Filter</option>
+              <option value="hist_momentum">3. Histogram Momentum</option>
+              <option value="zero_reclaim_loss">4. Zero-Line Reclaim/Loss</option>
+              <option value="macd_derivative_sign">5. MACD Derivative Sign</option>
+            </select>
+            <div id="markets_macd_mode_help" class="small" style="padding:6px 8px; border:1px solid rgba(255,255,255,0.08); border-radius:8px; background:rgba(255,255,255,0.03); width:100%;">
+              Buy: MACD crosses above Signal. Sell: MACD crosses below Signal.
+            </div>
+            <input name="macd_fast_length" type="number" min="2" step="1" value="12" placeholder="Fast EMA" style="width:100px;" />
+            <input name="macd_slow_length" type="number" min="2" step="1" value="26" placeholder="Slow EMA" style="width:100px;" />
+            <input name="macd_signal_length" type="number" min="2" step="1" value="9" placeholder="Signal EMA" style="width:100px;" />
+            <div id="markets_macd_derivative_wrap" style="width:100%; display:none;">
+              <input name="macd_derivative_buy_above" type="number" step="0.0001" placeholder="Buy when dMACD >" style="width:170px;" />
+              <input name="macd_derivative_sell_below" type="number" step="0.0001" placeholder="Sell when dMACD <" style="width:170px;" />
+              <select name="macd_derivative_signal_scope" style="width:220px;">
+                <option value="both" selected>dMACD side: BUY and SELL</option>
+                <option value="buy">dMACD side: BUY only</option>
+                <option value="sell">dMACD side: SELL only</option>
+              </select>
+              <div class="small">Used only for MACD Derivative Sign mode. This is separate from MACD override settings.</div>
+            </div>
+            <label class="small"><input id="markets_macd_override_on" type="checkbox" name="macd_signal_override_enabled" /> Allow MACD to override selected saved rule signals</label>
+            <div id="markets_macd_override_wrap" style="width:100%; display:none;">
+              <label class="small">MACD Override Scope</label>
+              <select name="macd_signal_override_scope">
+                <option value="both" selected>Overwrite BUY and SELL</option>
+                <option value="buy">Overwrite BUY only</option>
+                <option value="sell">Overwrite SELL only</option>
+              </select>
+              <label class="small">MACD Override Targets</label>
+              <select name="macd_signal_override_targets" multiple size="4" style="width:100%;">
+                {% for entry in macd_override_target_entries %}
+                <option value="{{ entry.id }}">{{ entry.label }}</option>
+                {% endfor %}
+              </select>
+              <div class="small">Scope controls whether MACD can overwrite BUY checks, SELL checks, or both on the selected targets.</div>
+            </div>
+            <button class="btn primary" type="submit">Save MACD Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add RSI Derivative Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="rsi_d" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="rsi_d_buy_above" type="number" step="0.0001" value="0" placeholder="Buy when dRSI >=" style="width:160px;" />
+            <input name="rsi_d_sell_below" type="number" step="0.0001" value="0" placeholder="Sell when dRSI <=" style="width:160px;" />
+            <button class="btn primary" type="submit">Save dRSI Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add ROC Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="roc" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="roc_length" type="number" min="1" step="1" value="12" placeholder="Length" style="width:100px;" />
+            <select name="roc_buy_condition">
+              <option value="momentum_long" selected>BUY: momentum long</option>
+              <option value="roc_cross_up_zero">BUY: ROC cross up zero</option>
+              <option value="roc_above_threshold">BUY: ROC above threshold</option>
+              <option value="roc_cross_up_threshold">BUY: ROC cross up threshold</option>
+              <option value="roc_increasing">BUY: ROC increasing</option>
+              <option value="roc_positive">BUY: ROC positive</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+            <select name="roc_sell_condition">
+              <option value="momentum_short" selected>SELL: momentum short</option>
+              <option value="roc_cross_down_zero">SELL: ROC cross down zero</option>
+              <option value="roc_below_threshold">SELL: ROC below threshold</option>
+              <option value="roc_cross_down_threshold">SELL: ROC cross down threshold</option>
+              <option value="roc_decreasing">SELL: ROC decreasing</option>
+              <option value="roc_negative">SELL: ROC negative</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+            <input name="roc_buy_threshold_pct" type="number" step="0.01" value="0" placeholder="BUY threshold %" style="width:140px;" />
+            <input name="roc_sell_threshold_pct" type="number" step="0.01" value="0" placeholder="SELL threshold %" style="width:140px;" />
+            <div class="small">ROC is percent change from N bars ago. Threshold modes use the matching BUY and SELL threshold fields.</div>
+            <button class="btn primary" type="submit">Save ROC Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add Parabolic SAR Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="sar" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="sar_step" type="text" inputmode="decimal" value="0.02" placeholder="Step (AF)" style="width:130px;" />
+            <input name="sar_max_step" type="text" inputmode="decimal" value="0.2" placeholder="Max AF" style="width:130px;" />
+            <select name="sar_buy_condition">
+              <option value="sar_cross_up" selected>BUY: price crosses above SAR</option>
+              <option value="price_above_sar">BUY: price above SAR</option>
+              <option value="sar_rising">BUY: SAR rising</option>
+              <option value="trend_long">BUY: trend long (above + rising)</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+            <select name="sar_sell_condition">
+              <option value="sar_cross_down" selected>SELL: price crosses below SAR</option>
+              <option value="price_below_sar">SELL: price below SAR</option>
+              <option value="sar_falling">SELL: SAR falling</option>
+              <option value="trend_short">SELL: trend short (below + falling)</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+            <div class="small">Parabolic SAR uses acceleration factor step and max controls to tighten trailing points in strong trends.</div>
+            <button class="btn primary" type="submit">Save SAR Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add Bollinger Bands Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="bb" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="bb_length" type="number" min="2" step="1" value="20" placeholder="Length" style="width:100px;" />
+            <input name="bb_std_mult" type="number" min="0.1" step="0.1" value="2.0" placeholder="StdDev" style="width:100px;" />
+            <select name="bb_buy_condition">
+              <option value="touch_lower" selected>BUY: touch lower band</option>
+              <option value="touch_upper">BUY: touch upper band</option>
+              <option value="close_outside_lower">BUY: close outside lower</option>
+              <option value="close_outside_upper">BUY: close outside upper</option>
+              <option value="reenter_from_below">BUY: re-enter from below</option>
+              <option value="reenter_from_above">BUY: re-enter from above</option>
+              <option value="width_increasing">BUY: width increasing</option>
+              <option value="width_decreasing">BUY: width decreasing</option>
+              <option value="width_below_threshold">BUY: squeeze (width below threshold)</option>
+              <option value="width_expanding_from_squeeze">BUY: width expanding from squeeze</option>
+              <option value="above_middle">BUY: price above middle band</option>
+              <option value="below_middle">BUY: price below middle band</option>
+              <option value="percent_b_above">BUY: %B above threshold</option>
+              <option value="percent_b_below">BUY: %B below threshold</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+            <select name="bb_sell_condition">
+              <option value="touch_upper" selected>SELL: touch upper band</option>
+              <option value="touch_lower">SELL: touch lower band</option>
+              <option value="close_outside_upper">SELL: close outside upper</option>
+              <option value="close_outside_lower">SELL: close outside lower</option>
+              <option value="reenter_from_above">SELL: re-enter from above</option>
+              <option value="reenter_from_below">SELL: re-enter from below</option>
+              <option value="width_decreasing">SELL: width decreasing</option>
+              <option value="width_increasing">SELL: width increasing</option>
+              <option value="width_below_threshold">SELL: squeeze (width below threshold)</option>
+              <option value="width_expanding_from_squeeze">SELL: width expanding from squeeze</option>
+              <option value="above_middle">SELL: price above middle band</option>
+              <option value="below_middle">SELL: price below middle band</option>
+              <option value="percent_b_above">SELL: %B above threshold</option>
+              <option value="percent_b_below">SELL: %B below threshold</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+            <input name="bb_squeeze_threshold_pct" type="number" step="0.01" value="5.0" placeholder="Squeeze width % <= " style="width:170px;" />
+            <input name="bb_percent_b_buy_threshold" type="number" step="0.01" value="0.2" placeholder="%B buy threshold" style="width:150px;" />
+            <input name="bb_percent_b_sell_threshold" type="number" step="0.01" value="0.8" placeholder="%B sell threshold" style="width:150px;" />
+            <div class="small">Touches and re-entries use band interactions. Width threshold is percent. %B thresholds are normalized 0 to 1.</div>
+            <button class="btn primary" type="submit">Save Bollinger Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px; grid-column: 1 / -1;">
+          <div class="small"><b>Add Ichimoku Cloud Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="ichimoku" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="ichi_tenkan_length" type="number" min="1" step="1" value="9" placeholder="Conversion Line" style="width:90px;" />
+            <input name="ichi_kijun_length" type="number" min="1" step="1" value="26" placeholder="Base Line" style="width:90px;" />
+            <input name="ichi_senkou_b_length" type="number" min="2" step="1" value="52" placeholder="Leading Span B" style="width:95px;" />
+            <input name="ichi_displacement" type="number" min="1" step="1" value="26" placeholder="Disp" style="width:90px;" />
+            <select id="markets_ichi_preset" style="width:330px;">
+              <option value="">Preset strategy (optional)</option>
+              <option value="institutional_trend_rider">Institutional Trend Rider</option>
+              <option value="breakout_retest">Breakout -> Retest</option>
+              <option value="early_trend_capture">Early Trend Capture</option>
+              <option value="trend_pullback_kijun">Trend Pullback (Base Line Reversion)</option>
+              <option value="exhaustion_reversal">Exhaustion / Blow-Off Reversal</option>
+              <option value="chop_filter">Chop Filter (Global Block)</option>
+              <option value="trend_weakening_exit">Trend Weakening / Exit Logic</option>
+            </select>
+            <button type="button" class="btn" id="markets_ichi_apply_preset">Apply Preset</button>
+            <select name="ichi_buy_match_mode" style="width:155px;">
+              <option value="all" selected>BUY match: ALL</option>
+              <option value="any">BUY match: ANY</option>
+            </select>
+            <select name="ichi_sell_match_mode" style="width:155px;">
+              <option value="all" selected>SELL match: ALL</option>
+              <option value="any">SELL match: ANY</option>
+            </select>
+            <select name="ichi_block_match_mode" style="width:170px;">
+              <option value="all" selected>BLOCK match: ALL</option>
+              <option value="any">BLOCK match: ANY</option>
+            </select>
+
+            <label class="small" style="width:100%;">BUY Conditions</label>
+            <select id="markets_ichi_buy_cond" name="ichi_buy_condition" multiple size="12" style="width:100%;">
+              <option value="strong_long_confirm" selected>BUY: stacked long confirmation</option>
+              <option value="full_bullish_stack">BUY: full bullish stack (3/3)</option>
+              <option value="partial_bullish_stack">BUY: partial bullish stack (2/3)</option>
+              <option value="price_above_cloud">BUY: price above live cloud</option>
+              <option value="price_inside_cloud">BUY: price inside live cloud</option>
+              <option value="price_above_tenkan_kijun_below_cloud">BUY: price above Conversion Line/Base Line, below past cloud</option>
+              <option value="price_above_tenkan_kijun_inside_cloud">BUY: price above Conversion Line/Base Line, inside past cloud</option>
+              <option value="cloud_bullish">BUY: live cloud bullish (A &gt; B)</option>
+              <option value="tenkan_cross_above">BUY: Conversion Line crosses above Base Line</option>
+              <option value="tenkan_above_kijun">BUY: Conversion Line above Base Line</option>
+              <option value="future_twist_bullish">BUY: future cloud twist bullish</option>
+              <option value="approaching_future_twist_bullish">BUY: price approaching future bullish twist</option>
+              <option value="delayed_bullish_cross_valid">BUY: delayed bullish cross still valid</option>
+              <option value="bullish_cross_strong_above_cloud">BUY: strong bullish cross (above live cloud)</option>
+              <option value="bullish_cross_medium_at_cloud">BUY: medium bullish cross (at live cloud)</option>
+              <option value="bullish_cross_weak_below_cloud">BUY: weak bullish cross (below live cloud)</option>
+              <option value="chikou_above_price">BUY: Lagging Line above price</option>
+              <option value="chikou_clears_past_cloud_bullish">BUY: Lagging Line clears past cloud (bullish)</option>
+              <option value="chikou_blocked_by_past_price">BUY: Lagging Line blocked by past price</option>
+              <option value="chikou_in_congestion_zone">BUY: Lagging Line in congestion zone</option>
+              <option value="cloud_breakout_bullish">BUY: bullish live cloud breakout</option>
+              <option value="bullish_breakout_retest_hold">BUY: breakout retest live cloud top hold</option>
+              <option value="shallow_cloud_entry_from_below">BUY: shallow cloud entry from below</option>
+              <option value="deep_inside_cloud">BUY: price deep inside live cloud</option>
+              <option value="cloud_exit_up_with_momentum">BUY: price exits live cloud up with momentum</option>
+              <option value="price_extended_above_cloud">BUY: price extended far above live cloud</option>
+              <option value="price_stretched_above_kijun">BUY: price stretched above Base Line</option>
+              <option value="kijun_bounce_bullish">BUY: bullish Base Line bounce</option>
+              <option value="kijun_flat">BUY: Base Line flat (magnet level)</option>
+              <option value="kijun_rising">BUY: Base Line rising</option>
+              <option value="tenkan_accelerating_up">BUY: Conversion Line slope accelerating up</option>
+              <option value="cloud_rejection_bullish">BUY: live cloud rejection bullish</option>
+              <option value="bullish_to_neutral_transition">BUY: bullish to neutral transition</option>
+              <option value="cloud_expanding">BUY: cloud expanding</option>
+              <option value="cloud_contracting">BUY: cloud contracting</option>
+              <option value="cloud_thin_to_thick">BUY: cloud thin -> thick</option>
+              <option value="bullish_stack_weakening">BUY: bullish stack weakening</option>
+              <option value="cloud_thickness_above">BUY: live cloud thickness above threshold</option>
+              <option value="cloud_thickness_below">BUY: live cloud thickness below threshold</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+
+            <label class="small" style="width:100%;">SELL Conditions</label>
+            <select id="markets_ichi_sell_cond" name="ichi_sell_condition" multiple size="12" style="width:100%;">
+              <option value="strong_short_confirm" selected>SELL: stacked short confirmation</option>
+              <option value="full_bearish_stack">SELL: full bearish stack (3/3)</option>
+              <option value="partial_bearish_stack">SELL: partial bearish stack (2/3)</option>
+              <option value="price_below_cloud">SELL: price below live cloud</option>
+              <option value="price_inside_cloud">SELL: price inside live cloud</option>
+              <option value="price_below_tenkan_kijun_above_cloud">SELL: price below Conversion Line/Base Line, above past cloud</option>
+              <option value="price_below_tenkan_kijun_inside_cloud">SELL: price below Conversion Line/Base Line, inside past cloud</option>
+              <option value="cloud_bearish">SELL: live cloud bearish (A &lt; B)</option>
+              <option value="tenkan_cross_below">SELL: Conversion Line crosses below Base Line</option>
+              <option value="tenkan_below_kijun">SELL: Conversion Line below Base Line</option>
+              <option value="future_twist_bearish">SELL: future cloud twist bearish</option>
+              <option value="approaching_future_twist_bearish">SELL: price approaching future bearish twist</option>
+              <option value="delayed_bearish_cross_valid">SELL: delayed bearish cross still valid</option>
+              <option value="bearish_cross_strong_below_cloud">SELL: strong bearish cross (below live cloud)</option>
+              <option value="bearish_cross_medium_at_cloud">SELL: medium bearish cross (at live cloud)</option>
+              <option value="bearish_cross_weak_above_cloud">SELL: weak bearish cross (above live cloud)</option>
+              <option value="chikou_below_price">SELL: Lagging Line below price</option>
+              <option value="chikou_clears_past_cloud_bearish">SELL: Lagging Line clears past cloud (bearish)</option>
+              <option value="chikou_blocked_by_past_price">SELL: Lagging Line blocked by past price</option>
+              <option value="chikou_in_congestion_zone">SELL: Lagging Line in congestion zone</option>
+              <option value="cloud_breakout_bearish">SELL: bearish live cloud breakdown</option>
+              <option value="bearish_breakdown_retest_fail">SELL: breakdown retest live cloud bottom fail</option>
+              <option value="shallow_cloud_entry_from_above">SELL: shallow cloud entry from above</option>
+              <option value="deep_inside_cloud">SELL: price deep inside live cloud</option>
+              <option value="cloud_exit_down_with_momentum">SELL: price exits live cloud down with momentum</option>
+              <option value="price_extended_below_cloud">SELL: price extended far below live cloud</option>
+              <option value="price_stretched_below_kijun">SELL: price stretched below Base Line</option>
+              <option value="kijun_reject_bearish">SELL: bearish Base Line rejection</option>
+              <option value="kijun_flat">SELL: Base Line flat (magnet level)</option>
+              <option value="kijun_falling">SELL: Base Line falling</option>
+              <option value="tenkan_accelerating_down">SELL: Conversion Line slope accelerating down</option>
+              <option value="cloud_rejection_bearish">SELL: live cloud rejection bearish</option>
+              <option value="bearish_to_neutral_transition">SELL: bearish to neutral transition</option>
+              <option value="cloud_expanding">SELL: cloud expanding</option>
+              <option value="cloud_contracting">SELL: cloud contracting</option>
+              <option value="cloud_thin_to_thick">SELL: cloud thin -> thick</option>
+              <option value="bearish_stack_weakening">SELL: bearish stack weakening</option>
+              <option value="weak_cross_inside_cloud">SELL: weak cross inside live cloud</option>
+              <option value="cloud_thickness_above">SELL: live cloud thickness above threshold</option>
+              <option value="cloud_thickness_below">SELL: live cloud thickness below threshold</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+
+            <label class="small" style="width:100%;">BLOCK / HOLD Conditions</label>
+            <select id="markets_ichi_block_cond" name="ichi_block_condition" multiple size="10" style="width:100%;">
+              <option value="hold" selected>BLOCK/HOLD: disabled</option>
+            </select>
+
+            <input name="ichi_cloud_thickness_threshold_pct" type="number" step="0.01" value="1.0" placeholder="Cloud thickness % threshold" style="width:200px;" />
+            <input name="ichi_kijun_bounce_tolerance_pct" type="number" step="0.01" value="0.35" placeholder="Base Line bounce tolerance %" style="width:200px;" />
+            <input name="ichi_delayed_cross_lookback" type="number" min="1" step="1" value="3" placeholder="Delayed cross lookback bars" style="width:220px;" />
+            <div id="markets_ichi_preset_desc" class="small" style="width:100%;"></div>
+            <div class="small" style="width:100%;">Supports twist timing, cross quality tiers, extension and geometry checks, cloud-depth transitions, retests, Lagging Line structure checks, and stack-strength states.</div>
+            <button class="btn primary" type="submit">Save Ichimoku Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add TTM Squeeze Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="ttm" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="ttm_bb_length" type="number" min="2" step="1" value="20" placeholder="BB length" style="width:110px;" />
+            <input name="ttm_bb_mult" type="number" min="0.1" step="0.1" value="2.0" placeholder="BB mult" style="width:100px;" />
+            <input name="ttm_kc_length" type="number" min="2" step="1" value="20" placeholder="KC length" style="width:110px;" />
+            <input name="ttm_kc_mult" type="number" min="0.1" step="0.1" value="1.5" placeholder="KC mult" style="width:100px;" />
+            <input name="ttm_momentum_length" type="number" min="2" step="1" value="20" placeholder="Momentum length" style="width:150px;" />
+            <select name="ttm_buy_condition">
+              <option value="long_release" selected>BUY: long release (fired + momentum &gt; 0)</option>
+              <option value="long_trend">BUY: long trend (squeeze off + rising momentum)</option>
+              <option value="squeeze_fired">BUY: squeeze fired</option>
+              <option value="squeeze_on">BUY: squeeze on</option>
+              <option value="squeeze_off">BUY: squeeze off</option>
+              <option value="momentum_above_zero">BUY: momentum above zero</option>
+              <option value="momentum_increasing">BUY: momentum increasing</option>
+              <option value="momentum_cross_up">BUY: momentum cross up</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+            <select name="ttm_sell_condition">
+              <option value="short_release" selected>SELL: short release (fired + momentum &lt; 0)</option>
+              <option value="short_trend">SELL: short trend (squeeze off + falling momentum)</option>
+              <option value="squeeze_fired">SELL: squeeze fired</option>
+              <option value="squeeze_on">SELL: squeeze on</option>
+              <option value="squeeze_off">SELL: squeeze off</option>
+              <option value="momentum_below_zero">SELL: momentum below zero</option>
+              <option value="momentum_decreasing">SELL: momentum decreasing</option>
+              <option value="momentum_cross_down">SELL: momentum cross down</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+            <div class="small">TTM squeeze means Bollinger is inside the Keltner channel. Momentum uses the centered linear-regression endpoint.</div>
+            <button class="btn primary" type="submit">Save TTM Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add Heikin Ashi Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="heikin_ashi" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <select id="markets_ha_mode_select" name="ha_mode">
+              <option value="transition" selected>Mode: Transition Flip</option>
+              <option value="state">Mode: Candle State</option>
+            </select>
+            <input name="ha_doji_tolerance_pct" type="number" min="0" step="0.001" placeholder="Doji tolerance %" style="width:150px;" />
+            <label class="small"><input id="markets_ha_override_on" type="checkbox" name="ha_signal_override_enabled" /> Allow Heikin Ashi to override selected saved rule signals</label>
+            <div id="markets_ha_override_wrap" style="width:100%; display:none;">
+              <label class="small">Heikin Ashi Override Scope</label>
+              <select name="ha_signal_override_scope">
+                <option value="both" selected>Overwrite BUY and SELL</option>
+                <option value="buy">Overwrite BUY only</option>
+                <option value="sell">Overwrite SELL only</option>
+              </select>
+              <label class="small">Heikin Ashi Override Targets</label>
+              <select name="ha_signal_override_targets" multiple size="4" style="width:100%;">
+                {% for entry in ha_override_target_entries %}
+                <option value="{{ entry.id }}">{{ entry.label }}</option>
+                {% endfor %}
+              </select>
+              <div class="small">Scope controls whether Heikin Ashi can overwrite BUY checks, SELL checks, or both on the selected targets.</div>
+            </div>
+            <div id="markets_ha_mode_help" class="small" style="width:100%;">Transition: buy on bearish→bullish, sell on bullish→bearish.</div>
+            <button class="btn primary" type="submit">Save Heikin Ashi Rule</button>
+          </form>
+        </div>
+      </div>
+
+      <div
+        style="margin-top:10px;"
+        hx-get="/partials/markets_rules"
+        hx-trigger="load, every 30s"
+        hx-swap="innerHTML"
+      >Loading…</div>
+    </div>
+
+    <div class="card" style="grid-column: span 12;">
+      <h3>Evolution Optimizer</h3>
+      <div class="small">Natural-selection search over indicator combinations. Rank 1 is the genome with the highest realized dollar profit from completed profitable sells. The tie-breaker is highest average realized dollar profit per completed sale. The run stops automatically when generations stop improving.</div>
+      <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-top:10px;">
+        <form method="post" action="/markets/optimizer/start" class="card" style="padding:10px; grid-column: 1 / -1;">
+          <input type="hidden" name="symbols" id="markets_optimizer_symbols" value="{{ markets_watchlist_symbols_csv }}" />
+          <input type="hidden" name="timeframe" id="markets_optimizer_timeframe" value="{{ markets_optimizer_defaults.timeframe }}" />
+          <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:10px;">
+            <div>
+              <label class="small" for="markets_optimizer_lookback">Lookback Candles</label>
+              <input id="markets_optimizer_lookback" name="lookback_candles" type="number" min="120" step="10" value="{{ markets_optimizer_defaults.lookback_candles }}" />
+            </div>
+            <div>
+              <label class="small" for="markets_optimizer_population">Population</label>
+              <input id="markets_optimizer_population" name="population_size" type="number" min="16" step="1" value="{{ markets_optimizer_defaults.population_size }}" />
+            </div>
+            <div>
+              <label class="small" for="markets_optimizer_elites">Elites</label>
+              <input id="markets_optimizer_elites" name="elite_count" type="number" min="1" step="1" value="{{ markets_optimizer_defaults.elite_count }}" />
+            </div>
+            <div>
+              <label class="small" for="markets_optimizer_immigrants">Immigrants</label>
+              <input id="markets_optimizer_immigrants" name="immigrant_count" type="number" min="0" step="1" value="{{ markets_optimizer_defaults.immigrant_count }}" />
+            </div>
+            <div>
+              <label class="small" for="markets_optimizer_generations">Max Generations</label>
+              <input id="markets_optimizer_generations" name="max_generations" type="number" min="1" step="1" value="{{ markets_optimizer_defaults.max_generations }}" />
+            </div>
+            <div>
+              <label class="small" for="markets_optimizer_patience">Stagnation Patience</label>
+              <input id="markets_optimizer_patience" name="stagnation_patience" type="number" min="1" step="1" value="{{ markets_optimizer_defaults.stagnation_patience }}" />
+            </div>
+            <div>
+              <label class="small" for="markets_optimizer_max_rules">Max Rules / Genome</label>
+              <input id="markets_optimizer_max_rules" name="max_rules" type="number" min="1" step="1" value="{{ markets_optimizer_defaults.max_rules }}" />
+            </div>
+            <div>
+              <label class="small" for="markets_optimizer_topk">Leaderboard Size</label>
+              <input id="markets_optimizer_topk" name="top_k_per_generation" type="number" min="3" step="1" value="{{ markets_optimizer_defaults.top_k_per_generation }}" />
+            </div>
+          </div>
+          <div class="row" style="align-items:center; justify-content:space-between; margin-top:10px;">
+            <div class="small">Universe uses the watchlist plus the Analyze Ticker field if present. Timeframe follows the Markets timeframe control.</div>
+            <button class="btn primary" type="submit">Start Evolution</button>
+          </div>
+        </form>
+
+        <form method="post" action="/markets/optimizer/stop" class="card" style="padding:10px;">
+          <div class="small"><b>Manual Stop</b></div>
+          <div class="small" style="margin-top:6px;">Requests a graceful stop. The current generation will finish its active work and then halt.</div>
+          <button class="btn danger" type="submit" style="margin-top:10px;">Stop Optimizer</button>
+        </form>
+      </div>
+      <div
+        id="markets_optimizer_panel"
+        style="margin-top:10px;"
+        hx-get="/partials/markets_optimizer"
+        hx-trigger="load, every 12s, markets-optimizer-refresh"
+        hx-swap="innerHTML"
+      >Loading…</div>
+    </div>
+
+    <div class="card" style="grid-column: span 12;">
+      <h3>Markets Backtest</h3>
+      <div class="small">Runs the enabled saved Markets rules against the current watchlist plus the optional Analyze Ticker field. Held End shows any simulated units still open at the end of the run, including mark-to-market gain or loss.</div>
+      <div class="row" style="align-items:flex-end; margin-top:10px; margin-bottom:8px;">
+        <div style="min-width:180px;">
+          <label class="small" for="markets_backtest_candles">Lookback Candles</label>
+          <input id="markets_backtest_candles" name="backtest_candles" type="number" min="40" step="10" value="2400" style="width:180px;" />
+        </div>
+        <button type="button" class="btn" id="markets_backtest_refresh_btn">Refresh Calculations</button>
+        <div class="small">Uses the same enabled saved rule set as the scanner. Default symbol universe: {{ markets_watchlist_symbols_csv if markets_watchlist_symbols_csv else "watchlist is empty" }}.</div>
+      </div>
+      <textarea id="markets_backtest_rules_json" name="rules_json" hidden>{{ enabled_indicator_rules_json }}</textarea>
+      <textarea id="markets_watchlist_data" hidden>{{ markets_watchlist_json }}</textarea>
+      <input type="hidden" id="markets_backtest_symbols" name="symbols" value="{{ markets_watchlist_symbols_csv }}" />
+      <input type="hidden" id="markets_backtest_nonce" name="_nonce" value="" />
+      <div
+        id="markets_backtest_table"
+        hx-get="/partials/markets_backtest"
+        hx-include="#markets_timeframe, #markets_backtest_symbols, #markets_backtest_rules_json, #markets_backtest_candles, #markets_backtest_nonce"
+        hx-trigger="load, every 45s, change from:#markets_timeframe, change from:#markets_backtest_candles, keyup changed delay:450ms from:#markets_symbol, markets-backtest-refresh"
+        hx-swap="innerHTML"
+      >Loading…</div>
+    </div>
+
+    <div class="card" style="grid-column: span 4;">
+      <h3>Watchlist</h3>
+      <form method="post" action="/markets/watchlist/add" class="row" style="margin-bottom:10px;">
+        <input name="symbol" placeholder="AAPL" style="width:110px;" required />
+        <button class="btn primary" type="submit">Add</button>
+      </form>
+      <div
+        hx-get="/partials/markets_watchlist"
+        hx-trigger="load, every 45s"
+        hx-swap="innerHTML"
+      >Loading…</div>
+    </div>
+
+    <div class="card" style="grid-column: span 8;">
+      <h3>Indicator Scanner</h3>
+      <div class="small">Signals and overlays are computed from the enabled saved indicator rules.</div>
+      <div
+        hx-get="/partials/markets_indicators"
+        hx-include="#markets_timeframe, #markets_symbol"
+        hx-trigger="load, every 40s, change from:#markets_timeframe, keyup changed delay:450ms from:#markets_symbol"
+        hx-swap="innerHTML"
+      >Loading…</div>
+    </div>
+
+    <div class="card" style="grid-column: span 12;">
+      <h3>Watchlist News</h3>
+      <div class="small">Primary source: Robinhood ticker news. Fallback source: Yahoo Finance RSS headlines.</div>
+      <div
+        hx-get="/partials/markets_news"
+        hx-include="#markets_news_limit"
+        hx-trigger="load, every 120s, change from:#markets_news_limit"
+        hx-swap="innerHTML"
+      >Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    function asText(value) {
+      return String(value == null ? "" : value).trim();
+    }
+
+    function cleanSymbol(value) {
+      return asText(value).toUpperCase().replace(/[^A-Z0-9._-]/g, "");
+    }
+
+    function uniqueSymbols(parts) {
+      const out = [];
+      const seen = new Set();
+      (parts || []).forEach((raw) => {
+        const sym = cleanSymbol(raw);
+        if (!sym || seen.has(sym)) return;
+        seen.add(sym);
+        out.push(sym);
+      });
+      return out;
+    }
+
+    function readJsonText(el, fallback) {
+      if (!el) return fallback;
+      const raw = typeof el.value === "string" ? el.value : el.textContent;
+      try {
+        return JSON.parse(String(raw || ""));
+      } catch (_err) {
+        return fallback;
+      }
+    }
+
+    function getMultiSelectValues(sel) {
+      if (!sel) return [];
+      return Array.from(sel.options || [])
+        .filter((opt) => !!opt.selected)
+        .map((opt) => asText(opt.value).toLowerCase())
+        .filter(Boolean);
+    }
+
+    function setMultiSelectValues(sel, values, fallback) {
+      if (!sel) return;
+      const wanted = new Set(
+        (Array.isArray(values) ? values : [values])
+          .map((item) => asText(item).toLowerCase())
+          .filter(Boolean)
+      );
+      const fallbackKey = asText(fallback).toLowerCase();
+      Array.from(sel.options || []).forEach((opt) => {
+        opt.selected = wanted.has(asText(opt.value).toLowerCase());
+      });
+      if (Array.from(sel.selectedOptions || []).length === 0 && fallbackKey) {
+        const fallbackOpt = Array.from(sel.options || []).find((opt) => asText(opt.value).toLowerCase() === fallbackKey);
+        if (fallbackOpt) fallbackOpt.selected = true;
+      }
+    }
+
+    function syncToggleWrap(toggleId, wrapId) {
+      const toggle = document.getElementById(toggleId);
+      const wrap = document.getElementById(wrapId);
+      if (!toggle || !wrap) return;
+      const render = () => {
+        wrap.style.display = toggle.checked ? "" : "none";
+      };
+      toggle.addEventListener("change", render);
+      toggle.addEventListener("input", render);
+      render();
+    }
+
+    const watchlistDataEl = document.getElementById("markets_watchlist_data");
+    const symbolEl = document.getElementById("markets_symbol");
+    const timeframeEl = document.getElementById("markets_timeframe");
+    const backtestSymbolsEl = document.getElementById("markets_backtest_symbols");
+    const backtestNonceEl = document.getElementById("markets_backtest_nonce");
+    const backtestTableEl = document.getElementById("markets_backtest_table");
+    const backtestRefreshBtnEl = document.getElementById("markets_backtest_refresh_btn");
+    const optimizerSymbolsEl = document.getElementById("markets_optimizer_symbols");
+    const optimizerTimeframeEl = document.getElementById("markets_optimizer_timeframe");
+
+    function buildActiveUniverseCsv() {
+      const watchlist = readJsonText(watchlistDataEl, []);
+      const base = Array.isArray(watchlist) ? watchlist : [];
+      const typed = symbolEl ? String(symbolEl.value || "").split(",") : [];
+      return uniqueSymbols(base.concat(typed)).join(", ");
+    }
+
+    function syncBacktestSymbols() {
+      if (!backtestSymbolsEl) return;
+      backtestSymbolsEl.value = buildActiveUniverseCsv();
+    }
+
+    function syncOptimizerSymbols() {
+      if (!optimizerSymbolsEl) return;
+      optimizerSymbolsEl.value = buildActiveUniverseCsv();
+    }
+
+    function triggerBacktestRefresh() {
+      syncBacktestSymbols();
+      if (backtestNonceEl) backtestNonceEl.value = String(Date.now());
+      if (window.htmx && backtestTableEl) {
+        window.htmx.trigger(backtestTableEl, "markets-backtest-refresh");
+      }
+    }
+
+    if (symbolEl) {
+      symbolEl.addEventListener("input", syncBacktestSymbols);
+      symbolEl.addEventListener("change", syncBacktestSymbols);
+      symbolEl.addEventListener("input", syncOptimizerSymbols);
+      symbolEl.addEventListener("change", syncOptimizerSymbols);
+    }
+    if (timeframeEl && optimizerTimeframeEl) {
+      const syncOptimizerTimeframe = () => {
+        optimizerTimeframeEl.value = String(timeframeEl.value || "1h");
+      };
+      timeframeEl.addEventListener("change", syncOptimizerTimeframe);
+      syncOptimizerTimeframe();
+    }
+    if (backtestRefreshBtnEl) {
+      backtestRefreshBtnEl.addEventListener("click", triggerBacktestRefresh);
+    }
+    syncBacktestSymbols();
+    syncOptimizerSymbols();
+
+    const maModeEl = document.getElementById("markets_ma_mode_select");
+    const maSingleWrapEl = document.getElementById("markets_ma_single_wrap");
+    const maRibbonWrapEl = document.getElementById("markets_ma_ribbon_wrap");
+    if (maModeEl && maSingleWrapEl && maRibbonWrapEl) {
+      const syncMaMode = () => {
+        const ribbonOn = maModeEl.value === "ribbon";
+        maSingleWrapEl.style.display = ribbonOn ? "none" : "";
+        maRibbonWrapEl.style.display = ribbonOn ? "" : "none";
+      };
+      maModeEl.addEventListener("change", syncMaMode);
+      syncMaMode();
+    }
+
+    const macdModeEl = document.getElementById("markets_macd_mode_select");
+    const macdModeHelpEl = document.getElementById("markets_macd_mode_help");
+    const macdDerivativeWrapEl = document.getElementById("markets_macd_derivative_wrap");
+    const macdHelpMap = {
+      signal_cross: "Buy: MACD crosses above Signal. Sell: MACD crosses below Signal.",
+      cross_regime: "Buy: bullish MACD/Signal cross and MACD > 0. Sell: bearish cross and MACD < 0.",
+      hist_momentum: "Buy: Histogram > 0 and rising versus prior bar. Sell: Histogram < 0 and falling versus prior bar.",
+      zero_reclaim_loss: "Buy: MACD > 0 and MACD > Signal. Sell: MACD crosses below Signal and can still be above zero.",
+      macd_derivative_sign: "Buy: dMACD > buy threshold. Sell: dMACD < sell threshold. Side mode can be BUY-only, SELL-only, or both."
+    };
+    if (macdModeEl && macdModeHelpEl) {
+      const syncMacdMode = () => {
+        const key = asText(macdModeEl.value) || "signal_cross";
+        macdModeHelpEl.textContent = macdHelpMap[key] || macdHelpMap.signal_cross;
+        if (macdDerivativeWrapEl) macdDerivativeWrapEl.style.display = key === "macd_derivative_sign" ? "" : "none";
+      };
+      macdModeEl.addEventListener("change", syncMacdMode);
+      syncMacdMode();
+    }
+
+    const haModeEl = document.getElementById("markets_ha_mode_select");
+    const haModeHelpEl = document.getElementById("markets_ha_mode_help");
+    const haHelpMap = {
+      transition: "Transition: buy on bearish→bullish, sell on bullish→bearish.",
+      state: "State: buy while bullish, sell while bearish."
+    };
+    if (haModeEl && haModeHelpEl) {
+      const syncHaMode = () => {
+        const key = asText(haModeEl.value) || "transition";
+        haModeHelpEl.textContent = haHelpMap[key] || haHelpMap.transition;
+      };
+      haModeEl.addEventListener("change", syncHaMode);
+      syncHaMode();
+    }
+
+    syncToggleWrap("markets_rsi_override_on", "markets_rsi_override_wrap");
+    syncToggleWrap("markets_macd_override_on", "markets_macd_override_wrap");
+    syncToggleWrap("markets_ha_override_on", "markets_ha_override_wrap");
+
+    const ICHI_PRESET_SETS = {
+      institutional_trend_rider: {
+        label: "Institutional Trend Rider",
+        intent: "Capture strong expanding trends only and avoid transitional cloud states.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: ["full_bullish_stack", "cloud_breakout_bullish", "chikou_clears_past_cloud_bullish", "kijun_rising", "strong_long_confirm"],
+        sell_conditions: ["full_bearish_stack", "cloud_breakout_bearish", "chikou_clears_past_cloud_bearish", "kijun_falling", "strong_short_confirm"],
+        block_conditions: ["price_inside_cloud", "cloud_thickness_below"]
+      },
+      breakout_retest: {
+        label: "Breakout -> Retest",
+        intent: "Enter only after breakout acceptance and retest confirmation.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: ["cloud_breakout_bullish", "bullish_breakout_retest_hold", "cloud_exit_up_with_momentum", "tenkan_above_kijun"],
+        sell_conditions: ["cloud_breakout_bearish", "bearish_breakdown_retest_fail", "cloud_exit_down_with_momentum", "tenkan_below_kijun"],
+        block_conditions: ["weak_cross_inside_cloud", "deep_inside_cloud"]
+      },
+      early_trend_capture: {
+        label: "Early Trend Capture",
+        intent: "Position during regime transition before full breakout confirmation.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: ["future_twist_bullish", "approaching_future_twist_bullish", "tenkan_cross_above", "delayed_bullish_cross_valid", "cloud_exit_up_with_momentum"],
+        sell_conditions: ["future_twist_bearish", "approaching_future_twist_bearish", "tenkan_cross_below", "delayed_bearish_cross_valid", "cloud_exit_down_with_momentum"],
+        block_conditions: ["deep_inside_cloud", "chikou_in_congestion_zone"]
+      },
+      trend_pullback_kijun: {
+        label: "Trend Pullback (Base Line Reversion)",
+        intent: "Trade pullbacks back into trend equilibrium around Base Line.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: ["kijun_bounce_bullish", "price_stretched_below_kijun", "tenkan_above_kijun", "partial_bullish_stack", "cloud_rejection_bullish"],
+        sell_conditions: ["kijun_reject_bearish", "price_stretched_above_kijun", "tenkan_below_kijun", "partial_bearish_stack", "cloud_rejection_bearish"],
+        block_conditions: ["price_inside_cloud", "cloud_contracting"]
+      },
+      exhaustion_reversal: {
+        label: "Exhaustion / Blow-Off Reversal",
+        intent: "Catch snapback reversals after extreme cloud/Base Line extension.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: ["price_extended_below_cloud", "price_stretched_below_kijun", "cloud_thickness_above", "chikou_blocked_by_past_price", "cloud_rejection_bullish", "bullish_to_neutral_transition"],
+        sell_conditions: ["price_extended_above_cloud", "price_stretched_above_kijun", "cloud_thickness_above", "chikou_blocked_by_past_price", "cloud_rejection_bearish", "bearish_to_neutral_transition"],
+        block_conditions: ["hold"]
+      },
+      chop_filter: {
+        label: "Chop Filter (Global Block)",
+        intent: "Block trades during low-quality congestion and chop environments.",
+        buy_mode: "all",
+        sell_mode: "all",
+        block_mode: "any",
+        buy_conditions: ["hold"],
+        sell_conditions: ["hold"],
+        block_conditions: ["price_inside_cloud", "deep_inside_cloud", "cloud_thickness_below", "weak_cross_inside_cloud", "chikou_in_congestion_zone", "cloud_contracting"]
+      },
+      trend_weakening_exit: {
+        label: "Trend Weakening / Exit Logic",
+        intent: "Exit when structure weakens instead of waiting for full trend collapse.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: ["bullish_stack_weakening", "bullish_to_neutral_transition", "tenkan_cross_above", "cloud_rejection_bullish", "price_above_tenkan_kijun_inside_cloud"],
+        sell_conditions: ["bearish_stack_weakening", "bearish_to_neutral_transition", "tenkan_cross_below", "cloud_rejection_bearish", "price_below_tenkan_kijun_inside_cloud"],
+        block_conditions: ["hold"]
+      }
+    };
+
+    const ichiPresetEl = document.getElementById("markets_ichi_preset");
+    const ichiPresetDescEl = document.getElementById("markets_ichi_preset_desc");
+    const ichiApplyPresetBtnEl = document.getElementById("markets_ichi_apply_preset");
+    const ichiBuySel = document.getElementById("markets_ichi_buy_cond");
+    const ichiSellSel = document.getElementById("markets_ichi_sell_cond");
+    const ichiBlockSel = document.getElementById("markets_ichi_block_cond");
+    const ichiBuyModeEl = document.querySelector("select[name='ichi_buy_match_mode']");
+    const ichiSellModeEl = document.querySelector("select[name='ichi_sell_match_mode']");
+    const ichiBlockModeEl = document.querySelector("select[name='ichi_block_match_mode']");
+
+    function syncIchiBlockOptions() {
+      if (!ichiBuySel || !ichiSellSel || !ichiBlockSel) return;
+      const current = getMultiSelectValues(ichiBlockSel);
+      const seen = new Set();
+      ichiBlockSel.innerHTML = "";
+      const addOption = (value, label) => {
+        const key = asText(value).toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        const opt = document.createElement("option");
+        opt.value = key;
+        opt.textContent = label;
+        ichiBlockSel.appendChild(opt);
+      };
+      addOption("hold", "BLOCK/HOLD: disabled");
+      [ichiBuySel, ichiSellSel].forEach((sel) => {
+        Array.from(sel.options || []).forEach((opt) => {
+          const value = asText(opt.value).toLowerCase();
+          if (!value || value === "hold") return;
+          const label = asText(opt.textContent).replace(/^BUY:\s*/i, "").replace(/^SELL:\s*/i, "").trim();
+          addOption(value, "BLOCK/HOLD: " + label);
+        });
+      });
+      setMultiSelectValues(ichiBlockSel, current, "hold");
+    }
+
+    function syncIchiPresetDescription() {
+      if (!ichiPresetEl || !ichiPresetDescEl) return;
+      const key = asText(ichiPresetEl.value);
+      const preset = key ? ICHI_PRESET_SETS[key] : null;
+      if (!preset) {
+        ichiPresetDescEl.textContent = "";
+        return;
+      }
+      ichiPresetDescEl.textContent =
+        preset.label +
+        ": " +
+        preset.intent +
+        " Modes -> BUY " +
+        String(preset.buy_mode || "all").toUpperCase() +
+        ", SELL " +
+        String(preset.sell_mode || "all").toUpperCase() +
+        ", BLOCK " +
+        String(preset.block_mode || "all").toUpperCase() +
+        ".";
+    }
+
+    function applyIchiPreset(key) {
+      const preset = ICHI_PRESET_SETS[asText(key)];
+      if (!preset || !ichiBuySel || !ichiSellSel || !ichiBlockSel) return;
+      setMultiSelectValues(ichiBuySel, preset.buy_conditions || ["hold"], "hold");
+      setMultiSelectValues(ichiSellSel, preset.sell_conditions || ["hold"], "hold");
+      if (ichiBuyModeEl) ichiBuyModeEl.value = asText(preset.buy_mode || "all").toLowerCase() === "any" ? "any" : "all";
+      if (ichiSellModeEl) ichiSellModeEl.value = asText(preset.sell_mode || "all").toLowerCase() === "any" ? "any" : "all";
+      if (ichiBlockModeEl) ichiBlockModeEl.value = asText(preset.block_mode || "all").toLowerCase() === "any" ? "any" : "all";
+      syncIchiBlockOptions();
+      setMultiSelectValues(ichiBlockSel, preset.block_conditions || ["hold"], "hold");
+      syncIchiPresetDescription();
+    }
+
+    if (ichiBuySel) {
+      ichiBuySel.addEventListener("change", syncIchiBlockOptions);
+      ichiBuySel.addEventListener("input", syncIchiBlockOptions);
+    }
+    if (ichiSellSel) {
+      ichiSellSel.addEventListener("change", syncIchiBlockOptions);
+      ichiSellSel.addEventListener("input", syncIchiBlockOptions);
+    }
+    if (ichiPresetEl) {
+      ichiPresetEl.addEventListener("change", syncIchiPresetDescription);
+      ichiPresetEl.addEventListener("input", syncIchiPresetDescription);
+    }
+    if (ichiApplyPresetBtnEl && ichiPresetEl) {
+      ichiApplyPresetBtnEl.addEventListener("click", () => {
+        const key = asText(ichiPresetEl.value);
+        if (!key) return;
+        applyIchiPreset(key);
+      });
+    }
+    syncIchiBlockOptions();
+    syncIchiPresetDescription();
+  })();
+</script>
+{% endblock %}

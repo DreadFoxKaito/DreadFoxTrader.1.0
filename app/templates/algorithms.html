@@ -1,0 +1,32 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="row" style="justify-content:space-between">
+  <div>
+    <h2 style="margin:0">Algorithms</h2>
+    <div class="small">Define rule-set combinations and runtime settings.</div>
+  </div>
+  <a class="btn primary" href="/algorithms/new">New Cryptid</a>
+</div>
+
+<div class="card" style="margin-top:12px">
+  <div class="row" style="justify-content:space-between; align-items:center;">
+    <div>
+      <h3 style="margin:0">Cryptids</h3>
+      <div class="small">Saved algorithms ready to run.</div>
+    </div>
+  </div>
+  <div hx-get="/partials/algorithms_table" hx-trigger="load" hx-swap="innerHTML">Loading…</div>
+</div>
+
+<div class="card" style="margin-top:12px">
+  <div class="row" style="justify-content:space-between; align-items:center;">
+    <div>
+      <h3 style="margin:0">Base Algos</h3>
+      <div class="small">Available scripts from the scripts directory.</div>
+    </div>
+  </div>
+  <div hx-get="/partials/base_scripts_table" hx-trigger="load" hx-swap="innerHTML">
+    Loading base algos…
+  </div>
+</div>
+{% endblock %}

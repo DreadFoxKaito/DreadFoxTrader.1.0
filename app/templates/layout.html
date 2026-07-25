@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>{% if title %}{{ title }} · {% endif %}Dreadfox Trader</title>
+
+  <link rel="stylesheet" href="/static/styles.css?v=20260307d"/>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <a href="/" class="brand-link">
+          <span class="brand-mark">🦊</span>
+          <span class="brand-name">Dreadfox Trader</span>
+        </a>
+      </div>
+
+      <nav class="nav">
+        <a class="nav-link {% if path=='/' %}active{% endif %}" href="/">Dashboard</a>
+        <a class="nav-link {% if '/algorithms' in (path or '') %}active{% endif %}" href="/algorithms">Algorithms</a>
+        <a class="nav-link {% if '/runs' in (path or '') %}active{% endif %}" href="/runs">Runs</a>
+        <a class="nav-link {% if '/markets' in (path or '') %}active{% endif %}" href="/markets">Markets</a>
+        <a class="nav-link {% if '/broker' in (path or '') %}active{% endif %}" href="/broker">Broker</a>
+        <a class="nav-link {% if '/assistant' in (path or '') %}active{% endif %}" href="/assistant">Assistant</a>
+      </nav>
+    </div>
+
+    <!-- Global portfolio / broker summary bar -->
+    <div class="subnav">
+      <div class="subnav-inner"
+           id="portfolio_summary_bar"
+           hx-get="/partials/portfolio_summary"
+           hx-trigger="load, every 25s"
+           hx-swap="innerHTML">
+        <div class="small">Loading portfolio summary…</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <div class="small">
+      Dreadfox Trader · local-first prototype ·
+      <a href="/broker" class="link">Manage brokers</a>
+    </div>
+  </footer>
+
+  <script>
+    // Small UX: on any HTMX request error, show something readable in the target
+    document.body.addEventListener('htmx:responseError', function (evt) {
+      try {
+        const target = evt.detail && evt.detail.target;
+        if (target) {
+          target.innerHTML = "<div class='small'>Request failed (" + evt.detail.xhr.status + ").</div>";
+        }
+      } catch (e) { /* ignore */ }
+    });
+  </script>
+  <script>
+    // Fallback: if HTMX fails to load (offline/CDN blocked), emulate basic hx-get behavior.
+    (function () {
+      function parseEvery(token) {
+        const m = token.match(/^every\s+(\d+)\s*(ms|s|m)?$/);
+        if (!m) return null;
+        let n = parseInt(m[1], 10);
+        const unit = m[2] || "s";
+        if (unit === "m") n *= 60 * 1000;
+        else if (unit === "s") n *= 1000;
+        return n;
+      }
+
+      function doGet(el) {
+        const url = el.getAttribute("hx-get");
+        if (!url) return;
+        const targetSel = el.getAttribute("hx-target");
+        const target = targetSel ? document.querySelector(targetSel) : el;
+        const swap = (el.getAttribute("hx-swap") || "innerHTML").toLowerCase();
+
+        fetch(url, { headers: { "HX-Request": "true" } })
+          .then((res) => res.text())
+          .then((html) => {
+            if (!target) return;
+            if (swap === "outerhtml") target.outerHTML = html;
+            else target.innerHTML = html;
+          })
+          .catch(() => {
+            if (target) target.innerHTML = "<div class='small'>Request failed.</div>";
+          });
+      }
+
+      function attach(el) {
+        const trigger = (el.getAttribute("hx-trigger") || "").trim();
+        const parts = trigger ? trigger.split(",").map((p) => p.trim()).filter(Boolean) : [];
+        const hasLoad = parts.includes("load");
+        const hasClick = parts.includes("click") || !trigger;
+
+        if (hasClick) {
+          el.addEventListener("click", function (evt) {
+            evt.preventDefault();
+            doGet(el);
+          });
+        }
+
+        if (hasLoad) {
+          doGet(el);
+        }
+
+        parts.forEach(function (p) {
+          const ms = parseEvery(p);
+          if (ms) {
+            setInterval(function () { doGet(el); }, ms);
+          }
+        });
+      }
+
+      function initFallback() {
+        if (window.htmx) return;
+        document.querySelectorAll("[hx-get]").forEach(attach);
+      }
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initFallback);
+      } else {
+        initFallback();
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Optional local semantic memory for app/assistant/embeddings.py.
+# This pulls in a larger ML stack, including PyTorch, and is not recommended
+# for the default Raspberry Pi deployment unless local embeddings are required.
+sentence-transformers>=3.3,<4

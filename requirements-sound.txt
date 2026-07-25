@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Optional sound playback for Dreadfox.Crypto.Robinhood.py when sounds are enabled.
+pygame==2.6.1

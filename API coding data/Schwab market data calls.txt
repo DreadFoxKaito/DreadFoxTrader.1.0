@@ -1,0 +1,255 @@
+
+
+Market Data
+
+ 1.0.0
+
+OAS3
+
+Trader API - Market data
+Contact Schwab Trader API team
+Servers
+Quotes
+
+Get Quotes Web Service.
+GET
+/quotes
+Get Quotes by list of symbols.
+Parameters
+NameDescription
+symbols
+string
+(query)
+
+
+Comma separated list of symbol(s) to look up a quote
+
+Example : MRAD,EATOF,EBIZ,AAPL,BAC,AAAHX,AAAIX,$DJI,$SPX,MVEN,SOBS,TOITF,CNSWF,AMZN 230317C01360000,DJX 231215C00290000,/ESH23,./ADUF23C0.55,AUD/CAD
+fields
+string
+(query)
+
+
+Request for subset of data by passing coma separated list of root nodes, possible root nodes are quote, fundamental, extended, reference, regular. Sending quote, fundamental in request will return quote and fundamental data in response. Dont send this attribute for full response.
+
+Default value : all
+indicative
+boolean
+(query)
+
+
+Include indicative symbol quotes for all ETF symbols in request. If ETF symbol ABC is in request and indicative=true API will return quotes for ABC and its corresponding indicative quote for $ABC.IV
+
+Available values : true, false
+
+Example : false
+Responses
+CodeDescriptionLinks
+200
+
+Quote Response
+Media type
+Controls Accept header.
+Examples
+
+{
+  "AAPL": {
+    "assetMainType": "EQUITY",
+    "symbol": "AAPL",
+    "quoteType": "NBBO",
+    "realtime": true,
+    "ssid": 1973757747,
+    "reference": {
+      "cusip": "037833100",
+      "description": "Apple Inc",
+      "exchange": "Q",
+      "exchangeName": "NASDAQ"
+    },
+    "quote": {
+      "52WeekHigh": 169,
+      "52WeekLow": 1.1,
+      "askMICId": "MEMX",
+      "askPrice": 168.41,
+      "askSize": 400,
+      "askTime": 1644854683672,
+      "bidMICId": "IEGX",
+      "bidPrice": 168.4,
+      "bidSize": 400,
+      "bidTime": 1644854683633,
+      "closePrice": 177.57,
+      "highPrice": 169,
+      "lastMICId": "XADF",
+      "lastPrice": 168.405,
+      "lastSize": 200,
+      "lowPrice": 167.09,
+      "mark": 168.405,
+      "markChange": -9.164999999999992,
+      "markPercentChange": -5.161344821760428,
+      "netChange": -9.165,
+      "netPercentChange": -5.161344821760428,
+      "openPrice": 167.37,
+      "quoteTime": 1644854683672,
+      "securityStatus": "Normal",
+      "totalVolume": 22361159,
+      "tradeTime": 1644854683408,
+      "volatility": 0.0347
+    },
+    "regular": {
+      "regularMarketLastPrice": 168.405,
+      "regularMarketLastSize": 2,
+      "regularMarketNetChange": -9.165,
+      "regularMarketPercentChange": -5.161344821760428,
+      "regularMarketTradeTime": 1644854683408
+    },
+    "fundamental": {
+      "avg10DaysVolume": 1,
+      "avg1YearVolume": 0,
+      "divAmount": 1.1,
+      "divFreq": 0,
+      "divPayAmount": 0,
+      "divYield": 1.1,
+      "eps": 0,
+      "fundLeverageFactor": 1.1,
+      "peRatio": 1.1
+    }
+  },
+  "AAAIX": {
+    "assetMainType": "MUTUAL_FUND",
+    "symbol": "AAAIX",
+    "realtime": true,
+    "ssid": -1,
+    "reference": {
+      "cusip": "025085853",
+      "description": "American Century Strategic Allocation: Aggressive Fund - I Class",
+      "exchange": "3",
+      "exchangeName": "Mutual Fund"
+    },
+    "quote": {
+      "52WeekHigh": 9.24,
+      "52WeekLow": 7.48,
+      "closePrice": 9.12,
+      "nAV": 0,
+      "netChange": -0.03,
+      "netPercentChange": -0.32894736842104566,
+      "securityStatus": "Normal",
+      "totalVolume": 0,
+      "tradeTime": 0
+    },
+    "fundamental": {
+      "avg10DaysVolume": 0,
+      "avg1YearVolume": 0,
+      "divAmount": 0,
+      "divFreq": 0,
+      "divPayAmount": 0,
+      "divYield": 0.83059,
+      "eps": 0,
+      "fundLeverageFactor": 0,
+      "peRatio": 0
+    }
+  },
+  "AAAHX": {
+    "assetMainType": "MUTUAL_FUND",
+    "symbol": "AAAHX",
+    "realtime": true,
+    "ssid": -1,
+    "reference": {
+      "cusip": "02507J789",
+      "description": "One Choice Blend+ 2015 Portfolio  I Class",
+      "exchange": "3",
+      "exchangeName": "Mutual Fund"
+    },
+    "quote": {
+      "52WeekHigh": 10.64,
+      "52WeekLow": 9.95,
+      "closePrice": 10.53,
+      "nAV": 0,
+      "netChange": 0,
+      "netPercentChange": 0,
+      "securityStatus": "Normal",
+      "totalVolume": 0,
+      "tradeTime": 0
+    },
+    "fundamental": {
+      "avg10DaysVolume": 0,
+      "avg1YearVolume": 0,
+      "divAmount": 0,
+      "divFreq": 0,
+      "divPayAmount": 0,
+      "divYield": 0,
+      "eps": 0,
+      "fundLeverageFactor": 0,
+      "peRatio": 0
+    }
+  },
+  "BAC": {
+    "assetMainType": "EQUITY",
+    "symbol": "BAC",
+    "quoteType": "NBBO",
+    "realtime": true,
+    "ssid": 851234497,
+    "reference": {
+      "cusip": "060505104",
+      "description": "Bank Of America Corp",
+      "exchange": "N",
+      "exchangeName": "NYSE"
+    },
+    "quote": {
+      "52WeekHigh": 48.185,
+      "52WeekLow": 22.95,
+      "askMICId": "XNYS",
+      "askPrice": 47.2,
+      "askSize": 2100,
+      "askTime": 1644854683639,
+      "bidMICId": "XNYS",
+      "bidPrice": 47.19,
+      "bidSize": 3700,
+      "bidTime": 1644854683640,
+      "closePrice": 44.49,
+      "highPrice": 48.185,
+      "lastMICId": "ARCX",
+      "lastPrice": 47.195,
+      "lastSize": 200,
+      "lowPrice": 47.06,
+      "mark": 47.195,
+      "markChange": 2.7049999999999983,
+      "markPercentChange": 6.080017981568888,
+      "netChange": 2.705,
+      "netPercentChange": 6.080017981568888,
+      "openPrice": 48.02,
+      "quoteTime": 1644854683640,
+      "securityStatus": "Normal",
+      "totalVolume": 13573182,
+      "tradeTime": 1644854683638,
+      "volatility": 0.0206
+    },
+    "regular": {
+      "regularMarketLastPrice": 47.195,
+      "regularMarketLastSize": 2,
+      "regularMarketNetChange": 2.705,
+      "regularMarketPercentChange": 6.080017981568888,
+      "regularMarketTradeTime": 1644854683638
+    },
+    "fundamental": {
+      "avg10DaysVolume": 43411957,
+      "avg1YearVolume": 40653250,
+      "declarationDate": "2021-07-21T05:00:00Z",
+      "divAmount": 0.75,
+      "divExDate": "2021-09-02T05:00:00Z",
+      "divFreq": 4,
+      "divPayAmount": 0.75,
+      "divPayDate": "2021-09-24T05:00:00Z",
+      "divYield": 1.77,
+      "eps": 2.996,
+      "fundLeverageFactor": 0,
+      "nextDivExDate": "2021-12-27T06:00:00Z",
+      "nextDivPayDate": "2021-12-27T06:00:00Z",
+      "peRatio": 13.50133
+    }
+  },
+  "$SPX": {
+    "assetMainType": "INDEX",
+    "symbol": "$SPX",
+    "realtime": true,
+    "ssid": 1819771877,
+    "reference": {
+

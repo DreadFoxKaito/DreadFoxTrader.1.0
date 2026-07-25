@@ -1,0 +1,755 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="assistant-news-hero card">
+  <div>
+    <div class="assistant-news-kicker">Daily Ticker News Workflow</div>
+    <h2>News Signal Assistant</h2>
+    <div class="small">Enter up to 100 tickers, pull recent articles and same-day tape, then send one combined source packet to OpenAI for the final review and ratings.</div>
+  </div>
+  <div class="assistant-news-hero-actions">
+    <span id="workflow_status" class="badge">idle</span>
+    <span id="openai_status_badge" class="badge {% if openai_configured %}ok{% else %}bad{% endif %}">{% if openai_configured %}OpenAI connected{% else %}OpenAI key missing{% endif %}</span>
+    <span id="ticker_count" class="badge">0 / 100 tickers</span>
+  </div>
+</div>
+
+<div class="grid assistant-grid assistant-news-grid" style="margin-top:12px">
+  <div class="card assistant-news-panel" style="grid-column: span 5;">
+    <div class="row" style="justify-content:space-between; align-items:flex-start;">
+      <div>
+        <h3>1. Build The Basket</h3>
+        <div class="small">Paste symbols separated by commas, spaces, or new lines. Invalid symbols are ignored before run.</div>
+      </div>
+      <button id="load_nasdaq100" class="btn small">Load Nasdaq-100</button>
+    </div>
+
+    <label class="small" for="ticker_input" style="margin-top:12px;">Tickers</label>
+    <textarea id="ticker_input" rows="10" spellcheck="false" placeholder="NVDA, MSFT, AAPL, AMZN, META..."></textarea>
+
+    <div class="row" style="margin-top:10px; justify-content:space-between;">
+      <div class="small" id="ticker_hint">Ready for a ticker list.</div>
+      <button id="clear_tickers" class="btn small">Clear</button>
+    </div>
+
+    <div class="assistant-news-settings">
+      <h3>2. Configure Run</h3>
+
+      <div class="assistant-openai-key">
+        <div class="row" style="justify-content:space-between; align-items:flex-start;">
+          <div>
+            <h3>OpenAI API Key</h3>
+            <div class="small muted" id="openai_key_hint">
+              {% if openai_configured %}
+              Using {{ openai_status.source }} key {{ openai_status.masked_key }}.
+              {% else %}
+              Save an OpenAI API key here or set OPENAI_API_KEY in .env.
+              {% endif %}
+            </div>
+          </div>
+          <span id="openai_key_status" class="badge {% if openai_configured %}ok{% else %}bad{% endif %}">{% if openai_configured %}configured{% else %}missing{% endif %}</span>
+        </div>
+        <label class="small" for="openai_api_key" style="margin-top:12px;">API Key</label>
+        <div class="row" style="gap:8px;">
+          <input id="openai_api_key" type="password" spellcheck="false" autocomplete="off" placeholder="sk-..." style="flex:1; min-width:220px;" />
+          <button id="save_openai_key" class="btn small" type="button" style="width:auto;">Save</button>
+          <button id="clear_openai_key" class="btn small" type="button" style="width:auto;">Clear Saved</button>
+        </div>
+        <div class="small muted" style="margin-top:6px;">Saved keys are encrypted locally. If OPENAI_API_KEY is set in .env, it takes priority over the saved key.</div>
+      </div>
+
+      <label class="small" for="assistant_model">Model</label>
+      <div class="row" style="gap:8px; align-items:center;">
+        <select id="assistant_model">
+          <option value="{{ default_model }}">{{ default_model }} (configured)</option>
+        </select>
+        <button id="assistant_refresh_models" class="btn small" style="width:auto;">Refresh Status</button>
+      </div>
+      <div class="small muted" id="model_hint">Checking OpenAI configuration...</div>
+
+      <div class="assistant-news-options">
+        <label class="small" for="articles_per_ticker">Articles / Ticker</label>
+        <input id="articles_per_ticker" type="number" min="1" max="10" step="1" value="4" />
+
+        <label class="small" for="max_article_chars">Article Text Chars</label>
+        <input id="max_article_chars" type="number" min="300" max="6000" step="100" value="1800" />
+
+        <label class="small" for="openai_timeout">OpenAI Timeout Sec</label>
+        <input id="openai_timeout" type="number" min="30" max="1200" step="10" value="180" />
+
+        <label class="small" for="max_input_chars">Max Input Chars</label>
+        <input id="max_input_chars" type="number" min="6000" max="400000" step="1000" value="180000" />
+
+        <label class="small" for="max_output_tokens">Max Output Tokens</label>
+        <input id="max_output_tokens" type="number" min="512" max="20000" step="256" value="6000" />
+      </div>
+
+      <div class="row" style="gap:12px; margin-top:12px;">
+        <label class="small assistant-news-check"><input type="checkbox" id="include_article_text" checked /> Read article text</label>
+        <label class="small assistant-news-check"><input type="checkbox" id="include_market_data" checked /> Include same-day tape</label>
+      </div>
+      <label class="small assistant-news-check" style="margin-top:12px;"><input type="checkbox" id="allow_model_run" /> Use my configured OpenAI API key for this run</label>
+      <div id="openai_run_warning" class="small bad" style="margin-top:8px; {% if model_runs_enabled %}display:none;{% endif %}">
+        {% if not assistant_model_runs_enabled %}
+        Assistant OpenAI runs are disabled by server configuration.
+        {% elif not openai_configured %}
+        OpenAI is not configured. Save an API key above or set OPENAI_API_KEY in .env.
+        {% endif %}
+      </div>
+
+      <details class="assistant-news-details" style="margin-top:12px;">
+        <summary class="row" style="justify-content:space-between;">
+          <span>System Prompt</span>
+          <span class="small">final review behavior</span>
+        </summary>
+        <textarea id="assistant_system" rows="12">{{ default_system }}</textarea>
+      </details>
+    </div>
+
+    <div class="row assistant-news-run-actions">
+      <button id="run_workflow" class="btn primary assistant-news-run">Run News Workflow</button>
+      <button id="stop_workflow" class="btn danger assistant-news-stop" disabled>Stop</button>
+    </div>
+    <div class="small" style="margin-top:8px;">The run creates a collected-news source packet and sends it to OpenAI once for the final synthesis.</div>
+  </div>
+
+  <div class="card assistant-news-panel" style="grid-column: span 7;">
+    <div class="row" style="justify-content:space-between; align-items:flex-start;">
+      <div>
+        <h3>Workflow Progress</h3>
+        <div class="small">Collection first, then one combined OpenAI review.</div>
+      </div>
+      <span id="job_id_badge" class="badge">no job</span>
+    </div>
+
+    <div class="assistant-news-flow">
+      <div class="assistant-news-step" data-step="collecting">
+        <div class="assistant-news-step-num">1</div>
+        <div><b>Collect</b><span>RSS articles, article text, same-day tape</span></div>
+      </div>
+      <div class="assistant-news-step" data-step="packet_ready">
+        <div class="assistant-news-step-num">2</div>
+        <div><b>Packet</b><span>One combined source packet</span></div>
+      </div>
+      <div class="assistant-news-step" data-step="final_ai">
+        <div class="assistant-news-step-num">3</div>
+        <div><b>OpenAI Review</b><span>Final ratings and suggestions</span></div>
+      </div>
+    </div>
+
+    <div class="assistant-news-progress-wrap">
+      <div class="assistant-news-progress-meta">
+        <span id="progress_label">Idle</span>
+        <span id="progress_numbers">0 / 0</span>
+      </div>
+      <div class="assistant-news-progress"><div id="progress_bar"></div></div>
+    </div>
+
+    <div id="current_message" class="assistant-news-current small">No workflow running.</div>
+
+    <h4 style="margin:16px 0 8px;">Collected Ticker Inputs</h4>
+    <div class="small muted">Ticker news and tape inputs appear here as collection completes.</div>
+    <div id="live_ticker_responses" class="assistant-news-live-responses">
+      <div class="small muted">Ticker inputs will appear here during the run.</div>
+    </div>
+
+    <h4 style="margin:16px 0 8px;">Run Log</h4>
+    <div id="workflow_events" class="assistant-loop-history assistant-news-events">
+      <div class="small muted">Events will appear here after you start a run.</div>
+    </div>
+  </div>
+
+  <div id="workflow_result_card" class="card assistant-news-result-card" style="grid-column: span 12; display:none;">
+    <div class="row" style="justify-content:space-between; align-items:flex-start;">
+      <div>
+        <h3>Final Daily Suggestions</h3>
+        <div id="result_meta" class="small">Waiting for synthesis.</div>
+      </div>
+      <div id="result_files" class="row" style="gap:8px;"></div>
+    </div>
+    <pre id="final_summary" class="assistant-news-summary"></pre>
+
+    <div class="row" style="justify-content:space-between; align-items:center; margin-top:14px;">
+      <h3 style="margin:0;">Ticker Impressions</h3>
+      <span id="impression_count" class="badge">0</span>
+    </div>
+    <div id="ticker_impressions" class="assistant-news-impressions"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const defaultModel = "{{ default_model }}";
+  const serverModelRunsEnabled = {{ "true" if assistant_model_runs_enabled else "false" }};
+  let openaiConfigured = {{ "true" if openai_configured else "false" }};
+  const statusEl = document.getElementById("workflow_status");
+  const openaiStatusBadgeEl = document.getElementById("openai_status_badge");
+  const openaiKeyStatusEl = document.getElementById("openai_key_status");
+  const openaiKeyHintEl = document.getElementById("openai_key_hint");
+  const openaiKeyInputEl = document.getElementById("openai_api_key");
+  const saveOpenaiKeyBtn = document.getElementById("save_openai_key");
+  const clearOpenaiKeyBtn = document.getElementById("clear_openai_key");
+  const openaiRunWarningEl = document.getElementById("openai_run_warning");
+  const tickerCountEl = document.getElementById("ticker_count");
+  const tickerHintEl = document.getElementById("ticker_hint");
+  const tickerInputEl = document.getElementById("ticker_input");
+  const clearTickersBtn = document.getElementById("clear_tickers");
+  const loadNasdaqBtn = document.getElementById("load_nasdaq100");
+  const runBtn = document.getElementById("run_workflow");
+  const stopBtn = document.getElementById("stop_workflow");
+  const modelEl = document.getElementById("assistant_model");
+  const refreshModelsBtn = document.getElementById("assistant_refresh_models");
+  const modelHintEl = document.getElementById("model_hint");
+  const systemEl = document.getElementById("assistant_system");
+  const articlesPerTickerEl = document.getElementById("articles_per_ticker");
+  const maxArticleCharsEl = document.getElementById("max_article_chars");
+  const openaiTimeoutEl = document.getElementById("openai_timeout");
+  const maxInputCharsEl = document.getElementById("max_input_chars");
+  const maxOutputTokensEl = document.getElementById("max_output_tokens");
+  const includeArticleTextEl = document.getElementById("include_article_text");
+  const includeMarketDataEl = document.getElementById("include_market_data");
+  const allowModelRunEl = document.getElementById("allow_model_run");
+  const jobIdBadgeEl = document.getElementById("job_id_badge");
+  const progressLabelEl = document.getElementById("progress_label");
+  const progressNumbersEl = document.getElementById("progress_numbers");
+  const progressBarEl = document.getElementById("progress_bar");
+  const currentMessageEl = document.getElementById("current_message");
+  const eventsEl = document.getElementById("workflow_events");
+  const liveTickerResponsesEl = document.getElementById("live_ticker_responses");
+  const resultCardEl = document.getElementById("workflow_result_card");
+  const resultMetaEl = document.getElementById("result_meta");
+  const resultFilesEl = document.getElementById("result_files");
+  const finalSummaryEl = document.getElementById("final_summary");
+  const impressionCountEl = document.getElementById("impression_count");
+  const impressionsEl = document.getElementById("ticker_impressions");
+
+  let pollTimer = null;
+  let currentJobId = "";
+  let startRequestInFlight = false;
+  let stopRequestInFlight = false;
+  let stopRequested = false;
+  let pollRequestInFlight = false;
+  let savedOpenAIKeyPresent = {{ "true" if openai_status.saved_key_present else "false" }};
+
+  function modelRunsEnabled() {
+    return serverModelRunsEnabled && openaiConfigured;
+  }
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = "badge" + (kind ? " " + kind : "");
+  }
+
+  function renderOpenAIKeyStatus(data) {
+    const status = data || {};
+    openaiConfigured = !!status.configured;
+    const source = status.source || (openaiConfigured ? "configured" : "missing");
+    const sourceLabel = source === "env" ? ".env" : source === "saved" ? "saved" : source;
+    const keyLabel = openaiConfigured ? `OpenAI connected (${sourceLabel})` : "OpenAI key missing";
+    openaiStatusBadgeEl.textContent = keyLabel;
+    openaiStatusBadgeEl.className = "badge " + (openaiConfigured ? "ok" : "bad");
+    openaiKeyStatusEl.textContent = openaiConfigured ? sourceLabel : "missing";
+    openaiKeyStatusEl.className = "badge " + (openaiConfigured ? "ok" : "bad");
+
+    if (openaiConfigured) {
+      const masked = status.masked_key ? ` ${status.masked_key}` : "";
+      openaiKeyHintEl.textContent = source === "env"
+        ? `Using OPENAI_API_KEY from .env${masked}. A saved key is ignored while the environment key is set.`
+        : `Using saved OpenAI API key${masked}.`;
+    } else {
+      openaiKeyHintEl.textContent = status.error || "Save an OpenAI API key here or set OPENAI_API_KEY in .env.";
+    }
+
+    if (!serverModelRunsEnabled) {
+      openaiRunWarningEl.style.display = "";
+      openaiRunWarningEl.textContent = "Assistant OpenAI runs are disabled by server configuration.";
+    } else if (!openaiConfigured) {
+      openaiRunWarningEl.style.display = "";
+      openaiRunWarningEl.textContent = "OpenAI is not configured. Save an API key above or set OPENAI_API_KEY in .env.";
+    } else {
+      openaiRunWarningEl.style.display = "none";
+      openaiRunWarningEl.textContent = "";
+    }
+
+    savedOpenAIKeyPresent = !!status.saved_key_present;
+    clearOpenaiKeyBtn.disabled = !!currentJobId || !savedOpenAIKeyPresent;
+    updateTickerCount();
+  }
+
+  function parseTickers(raw) {
+    const seen = new Set();
+    const out = [];
+    String(raw || "").split(/[\s,;|]+/).forEach((part) => {
+      let symbol = part.trim().toUpperCase();
+      if (symbol.startsWith("$")) symbol = symbol.slice(1);
+      symbol = symbol.replace("/", "-");
+      if (!/^[A-Z][A-Z0-9.\-]{0,11}$/.test(symbol)) return;
+      if (seen.has(symbol)) return;
+      seen.add(symbol);
+      out.push(symbol);
+    });
+    return out.slice(0, 100);
+  }
+
+  function updateTickerCount() {
+    const tickers = parseTickers(tickerInputEl.value);
+    tickerCountEl.textContent = `${tickers.length} / 100 tickers`;
+    tickerCountEl.className = "badge" + (tickers.length ? " ok" : "");
+    tickerHintEl.textContent = tickers.length
+      ? `${tickers.length} valid ticker${tickers.length === 1 ? "" : "s"} ready.`
+      : "Ready for a ticker list.";
+    runBtn.disabled = !modelRunsEnabled() || !tickers.length || !!currentJobId || startRequestInFlight || !allowModelRunEl.checked;
+  }
+
+  function setRunControls(disabled) {
+    const busy = disabled || !!currentJobId || startRequestInFlight;
+    runBtn.disabled = busy || !modelRunsEnabled() || !parseTickers(tickerInputEl.value).length || !allowModelRunEl.checked;
+    stopBtn.disabled = !currentJobId || stopRequestInFlight || stopRequested;
+    loadNasdaqBtn.disabled = busy;
+    clearTickersBtn.disabled = busy;
+    saveOpenaiKeyBtn.disabled = busy;
+    clearOpenaiKeyBtn.disabled = busy || !savedOpenAIKeyPresent;
+  }
+
+  function intValue(el, fallback) {
+    const value = parseInt(el.value || fallback, 10);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  async function loadModels() {
+    modelEl.innerHTML = "";
+    const fallback = document.createElement("option");
+    fallback.value = defaultModel;
+    fallback.textContent = defaultModel + " (default)";
+    modelEl.appendChild(fallback);
+    try {
+      modelHintEl.textContent = "Checking OpenAI configuration...";
+      const resp = await fetch("/assistant/models");
+      const data = await resp.json();
+      renderOpenAIKeyStatus(data);
+      const models = Array.isArray(data.models) ? data.models : [];
+      if (!models.length) {
+        modelHintEl.textContent = data.error || "No OpenAI model is configured.";
+        return;
+      }
+      modelEl.innerHTML = "";
+      models.forEach((name) => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        const isDefault = name === defaultModel;
+        opt.textContent = name + (isDefault ? " (default)" : "");
+        if (name === defaultModel) opt.selected = true;
+        modelEl.appendChild(opt);
+      });
+      if (!modelEl.value && modelEl.options.length) modelEl.options[0].selected = true;
+      const server = data.openai_base_url || "configured OpenAI endpoint";
+      if (data.configured) {
+        const source = data.source === "env" ? ".env" : data.source || "saved";
+        modelHintEl.textContent = `${models.length} OpenAI model${models.length === 1 ? "" : "s"} configured for ${server} using ${source} key.`;
+      } else {
+        modelHintEl.textContent = data.error || "OpenAI API key is not configured.";
+      }
+    } catch (err) {
+      modelHintEl.textContent = "OpenAI status refresh failed: " + err.message;
+    }
+  }
+
+  async function loadOpenAIKeyStatus() {
+    try {
+      const resp = await fetch("/assistant/openai-key");
+      const data = await resp.json();
+      renderOpenAIKeyStatus(data);
+    } catch (err) {
+      openaiKeyHintEl.textContent = "OpenAI key status refresh failed: " + err.message;
+    }
+  }
+
+  async function saveOpenAIKey() {
+    const apiKey = openaiKeyInputEl.value.trim();
+    if (!apiKey) {
+      openaiKeyHintEl.textContent = "Paste an OpenAI API key before saving.";
+      return;
+    }
+    saveOpenaiKeyBtn.disabled = true;
+    openaiKeyHintEl.textContent = "Saving OpenAI API key...";
+    try {
+      const resp = await fetch("/assistant/openai-key", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({api_key: apiKey}),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Unable to save OpenAI API key");
+      openaiKeyInputEl.value = "";
+      renderOpenAIKeyStatus(data);
+      loadModels();
+    } catch (err) {
+      openaiKeyHintEl.textContent = "Save failed: " + err.message;
+    } finally {
+      saveOpenaiKeyBtn.disabled = false;
+      setRunControls(false);
+    }
+  }
+
+  async function clearOpenAIKey() {
+    clearOpenaiKeyBtn.disabled = true;
+    openaiKeyHintEl.textContent = "Clearing saved OpenAI API key...";
+    try {
+      const resp = await fetch("/assistant/openai-key", {method: "DELETE"});
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Unable to clear saved OpenAI API key");
+      renderOpenAIKeyStatus(data);
+      loadModels();
+    } catch (err) {
+      openaiKeyHintEl.textContent = "Clear failed: " + err.message;
+    } finally {
+      setRunControls(false);
+    }
+  }
+
+  async function loadNasdaq100() {
+    loadNasdaqBtn.disabled = true;
+    loadNasdaqBtn.textContent = "Loading...";
+    try {
+      const resp = await fetch("/assistant/nasdaq100");
+      const data = await resp.json();
+      if (!resp.ok || !Array.isArray(data.tickers) || !data.tickers.length) {
+        throw new Error(data.error || "Unable to load Nasdaq-100 tickers");
+      }
+      tickerInputEl.value = data.tickers.join(", ");
+      tickerHintEl.textContent = `${data.count || data.tickers.length} symbols loaded from ${data.source || "Nasdaq-100 source"}.`;
+      updateTickerCount();
+    } catch (err) {
+      tickerHintEl.textContent = "Nasdaq-100 load failed: " + err.message;
+    } finally {
+      loadNasdaqBtn.textContent = "Load Nasdaq-100";
+      setRunControls(false);
+    }
+  }
+
+  function renderEvents(events) {
+    const list = Array.isArray(events) ? events.slice(-30) : [];
+    eventsEl.innerHTML = "";
+    if (!list.length) {
+      eventsEl.innerHTML = '<div class="small muted">No events yet.</div>';
+      return;
+    }
+    list.reverse().forEach((event) => {
+      const item = document.createElement("div");
+      item.className = "assistant-loop-entry";
+      const meta = document.createElement("div");
+      meta.className = "assistant-loop-meta";
+      meta.textContent = `${event.stage || "stage"} - ${event.ts || ""}`;
+      const body = document.createElement("div");
+      body.className = "assistant-loop-body small";
+      body.textContent = event.message || "";
+      item.appendChild(meta);
+      item.appendChild(body);
+      eventsEl.appendChild(item);
+    });
+  }
+
+  function renderLiveTickerResponses(events) {
+    const byPrompt = new Map();
+    (Array.isArray(events) ? events : []).forEach((event) => {
+      if (!["ticker_collected", "ticker_ready", "ticker_ai", "ticker_done"].includes(event.stage)) return;
+      const index = Number(event.prompt_index || 0);
+      if (!index) return;
+      const key = `${index}:${event.current_ticker || ""}`;
+      const existing = byPrompt.get(key) || {};
+      byPrompt.set(key, {...existing, ...event});
+    });
+
+    const rows = Array.from(byPrompt.values()).sort((a, b) => Number(a.prompt_index || 0) - Number(b.prompt_index || 0));
+    const shouldStickToBottom = liveTickerResponsesEl.scrollTop + liveTickerResponsesEl.clientHeight >= liveTickerResponsesEl.scrollHeight - 80;
+    liveTickerResponsesEl.innerHTML = "";
+    if (!rows.length) {
+      liveTickerResponsesEl.innerHTML = '<div class="small muted">Ticker inputs will appear here during the run.</div>';
+      return;
+    }
+
+    rows.forEach((event) => {
+      const card = document.createElement("div");
+      card.className = "assistant-news-live-card" + (event.stage === "ticker_done" ? " complete" : " pending");
+
+      const summary = document.createElement("div");
+      summary.className = "assistant-news-live-header";
+      const status = event.stage === "ticker_collected" ? "collected" : event.stage === "ticker_done" ? (event.model_status || "done") : event.stage === "ticker_ai" ? "prompting" : "reading";
+      summary.innerHTML = `<span class="assistant-news-symbol">${escapeHtml(event.current_ticker || "?")}</span><span class="badge ${status === "ok" || status === "done" || status === "collected" ? "ok" : status === "error" ? "bad" : "warn"}">${escapeHtml(status)}</span><span class="small">Ticker ${escapeHtml(event.prompt_index || "?")} / ${escapeHtml(event.prompt_total || "?")}</span>`;
+      card.appendChild(summary);
+
+      const meta = document.createElement("div");
+      meta.className = "assistant-news-live-meta small";
+      meta.textContent = [
+        event.article_count != null ? `${event.article_count} articles` : "",
+        event.model ? `final model ${event.model}` : "",
+        event.prompt_chars ? `combined prompt ${event.prompt_chars} chars` : "",
+      ].filter(Boolean).join(" | ");
+      if (meta.textContent) card.appendChild(meta);
+
+      if (event.market_note) {
+        const market = document.createElement("div");
+        market.className = "assistant-news-live-market small";
+        market.textContent = "Tape: " + event.market_note;
+        card.appendChild(market);
+      }
+
+      const notes = Array.isArray(event.article_notes) ? event.article_notes : [];
+      if (notes.length) {
+        const noteWrap = document.createElement("div");
+        noteWrap.className = "assistant-news-live-notes";
+        notes.forEach((note) => {
+          const noteEl = document.createElement(note.url ? "a" : "div");
+          noteEl.className = "assistant-news-live-note small";
+          if (note.url) {
+            noteEl.href = note.url;
+            noteEl.target = "_blank";
+            noteEl.rel = "noopener noreferrer";
+          }
+          noteEl.textContent = `${note.title || "Untitled"} - ${note.source || "source"}${note.summary ? " :: " + note.summary : ""}`;
+          noteWrap.appendChild(noteEl);
+        });
+        card.appendChild(noteWrap);
+      }
+
+      const response = document.createElement("pre");
+      response.className = "assistant-news-live-response";
+      response.textContent = event.impression
+        ? event.impression
+        : "Collected for the combined OpenAI final review.";
+      card.appendChild(response);
+      liveTickerResponsesEl.appendChild(card);
+    });
+    if (shouldStickToBottom) {
+      liveTickerResponsesEl.scrollTop = liveTickerResponsesEl.scrollHeight;
+    }
+  }
+
+  function activateStep(stage) {
+    document.querySelectorAll(".assistant-news-step").forEach((el) => {
+      const step = el.getAttribute("data-step");
+      const active = step === stage || (stage === "ticker_collected" && step === "collecting") || (stage === "complete" && step === "final_ai");
+      el.classList.toggle("active", active);
+    });
+  }
+
+  function renderJob(job) {
+    const status = job.status || "unknown";
+    const stage = job.stage || status;
+    stopRequested = stopRequested || status === "stopping" || !!job.cancel_requested;
+    const total = Number(job.total || 0);
+    const completed = Number(job.completed || 0);
+    const pct = total ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 0;
+    jobIdBadgeEl.textContent = job.job_id ? `job ${job.job_id}` : "no job";
+    progressLabelEl.textContent = stage;
+    progressNumbersEl.textContent = `${completed} / ${total}`;
+    progressBarEl.style.width = `${pct}%`;
+    currentMessageEl.textContent = job.message || "";
+    activateStep(stage);
+    renderEvents(job.events || []);
+    renderLiveTickerResponses(job.ticker_responses || job.events || []);
+
+    if (status === "running" || status === "queued" || status === "stopping") setStatus(status, "warn");
+    else if (status === "complete") setStatus("complete", "ok");
+    else if (status === "stopped") setStatus("stopped", "warn");
+    else if (status === "error") setStatus("error", "bad");
+    else setStatus(status, "");
+    setRunControls(false);
+  }
+
+  function fileLink(jobId, label, fileName) {
+    const a = document.createElement("a");
+    a.className = "btn small";
+    a.href = `/assistant/news-workflow/${jobId}/files/${fileName}`;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = label;
+    return a;
+  }
+
+  function renderResult(job) {
+    const result = job.result || {};
+    resultCardEl.style.display = "block";
+    resultMetaEl.textContent = `Generated ${result.generated_at || "unknown"} - ${result.elapsed_sec || "?"} sec - OpenAI model ${result.model || "unknown"}`;
+    finalSummaryEl.textContent = result.final_summary || "No final summary returned.";
+
+    resultFilesEl.innerHTML = "";
+    resultFilesEl.appendChild(fileLink(job.job_id, "News Packet MD", "news_packet.md"));
+    resultFilesEl.appendChild(fileLink(job.job_id, "News Packet JSON", "news_packet.json"));
+    resultFilesEl.appendChild(fileLink(job.job_id, "Final MD", "final_summary.md"));
+
+    const impressions = Array.isArray(result.impressions) ? result.impressions : [];
+    impressionCountEl.textContent = String(impressions.length);
+    impressionsEl.innerHTML = "";
+    impressions.forEach((item) => {
+      const details = document.createElement("details");
+      details.className = "assistant-news-impression";
+      const summary = document.createElement("summary");
+      const market = item.market || {};
+      const trend = market.trend || "unknown";
+      summary.innerHTML = `<span class="assistant-news-symbol">${escapeHtml(item.ticker || "?")}</span><span class="badge ${trend === "uptrend" ? "ok" : trend === "downtrend" ? "bad" : ""}">${escapeHtml(trend)}</span><span class="small">${item.article_count || 0} articles</span>`;
+      const pre = document.createElement("pre");
+      pre.className = "assistant-news-impression-text";
+      pre.textContent = item.impression || item.source_note || "Collected for the combined OpenAI final review.";
+      const sources = document.createElement("div");
+      sources.className = "assistant-news-sources";
+      (Array.isArray(item.articles) ? item.articles : []).forEach((article) => {
+        const link = document.createElement(article.url ? "a" : "div");
+        link.className = "small link";
+        if (article.url) {
+          link.href = article.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+        }
+        link.textContent = `${article.title || "Untitled"} - ${article.source || "source"}`;
+        sources.appendChild(link);
+      });
+      details.appendChild(summary);
+      details.appendChild(pre);
+      details.appendChild(sources);
+      impressionsEl.appendChild(details);
+    });
+  }
+
+  function escapeHtml(value) {
+    return String(value || "").replace(/[&<>'"]/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[ch]));
+  }
+
+  async function pollJob() {
+    if (!currentJobId || pollRequestInFlight) return;
+    pollRequestInFlight = true;
+    try {
+      const resp = await fetch(`/assistant/news-workflow/${currentJobId}`);
+      const job = await resp.json();
+      if (!resp.ok) throw new Error(job.error || "Status request failed");
+      renderJob(job);
+      if (job.status === "complete") {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        currentJobId = "";
+        stopRequested = false;
+        setRunControls(false);
+        renderResult(job);
+        updateTickerCount();
+      } else if (job.status === "error" || job.status === "stopped") {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        currentJobId = "";
+        stopRequested = false;
+        setRunControls(false);
+        currentMessageEl.textContent = job.error || job.message || (job.status === "stopped" ? "Workflow stopped." : "Workflow failed.");
+        updateTickerCount();
+      }
+    } catch (err) {
+      currentMessageEl.textContent = "Poll failed: " + err.message;
+    } finally {
+      pollRequestInFlight = false;
+    }
+  }
+
+  async function startWorkflow() {
+    if (startRequestInFlight || currentJobId) return;
+    const tickers = parseTickers(tickerInputEl.value);
+    if (!tickers.length) {
+      tickerHintEl.textContent = "Enter at least one valid ticker.";
+      return;
+    }
+    startRequestInFlight = true;
+    stopRequested = false;
+    resultCardEl.style.display = "none";
+    setRunControls(true);
+    setStatus("starting", "warn");
+    currentMessageEl.textContent = "Submitting workflow...";
+
+    const payload = {
+      tickers,
+      model: modelEl.value || defaultModel,
+      system_prompt: systemEl.value || "",
+      articles_per_ticker: intValue(articlesPerTickerEl, 4),
+      max_article_chars: intValue(maxArticleCharsEl, 1800),
+      openai_timeout: intValue(openaiTimeoutEl, 180),
+      max_input_chars: intValue(maxInputCharsEl, 180000),
+      max_output_tokens: intValue(maxOutputTokensEl, 6000),
+      include_article_text: includeArticleTextEl.checked,
+      include_market_data: includeMarketDataEl.checked,
+      allow_model_run: allowModelRunEl.checked,
+    };
+
+    try {
+      const resp = await fetch("/assistant/news-workflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const job = await resp.json();
+      if (!resp.ok) {
+        if (resp.status === 409 && job.active_job_id) {
+          currentJobId = job.active_job_id;
+          currentMessageEl.textContent = job.error || "Assistant workflow is already running.";
+          renderJob(job.active_job || job);
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = setInterval(pollJob, 1800);
+          pollJob();
+          return;
+        }
+        throw new Error(job.error || "Workflow start failed");
+      }
+      currentJobId = job.job_id;
+      renderJob(job);
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(pollJob, 1800);
+      pollJob();
+    } catch (err) {
+      setStatus("error", "bad");
+      currentMessageEl.textContent = "Start failed: " + err.message;
+      currentJobId = "";
+      setRunControls(false);
+      updateTickerCount();
+    } finally {
+      startRequestInFlight = false;
+      setRunControls(false);
+      updateTickerCount();
+    }
+  }
+
+  async function stopWorkflow() {
+    if (!currentJobId || stopRequestInFlight || stopRequested) return;
+    stopRequestInFlight = true;
+    stopRequested = true;
+    setRunControls(false);
+    setStatus("stopping", "warn");
+    currentMessageEl.textContent = "Stop requested; waiting for the active OpenAI request to halt.";
+    try {
+      const resp = await fetch(`/assistant/news-workflow/${currentJobId}/stop`, {method: "POST"});
+      const job = await resp.json();
+      if (!resp.ok) throw new Error(job.error || "Stop request failed");
+      renderJob(job);
+      if (!pollTimer) pollTimer = setInterval(pollJob, 1800);
+      pollJob();
+    } catch (err) {
+      stopRequested = false;
+      currentMessageEl.textContent = "Stop failed: " + err.message;
+    } finally {
+      stopRequestInFlight = false;
+      setRunControls(false);
+    }
+  }
+
+  tickerInputEl.addEventListener("input", updateTickerCount);
+  clearTickersBtn.addEventListener("click", () => {
+    tickerInputEl.value = "";
+    updateTickerCount();
+  });
+  loadNasdaqBtn.addEventListener("click", loadNasdaq100);
+  refreshModelsBtn.addEventListener("click", loadModels);
+  saveOpenaiKeyBtn.addEventListener("click", saveOpenAIKey);
+  clearOpenaiKeyBtn.addEventListener("click", clearOpenAIKey);
+  allowModelRunEl.addEventListener("change", updateTickerCount);
+  runBtn.addEventListener("click", startWorkflow);
+  stopBtn.addEventListener("click", stopWorkflow);
+
+  updateTickerCount();
+  loadOpenAIKeyStatus();
+  loadModels();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="row" style="justify-content:space-between">
+  <div>
+    <h2 style="margin:0">Run #{{ run.id }} — {{ run.algorithm_name }}</h2>
+    <div class="small">PID: {{ run.pid or "—" }} · Status: {{ run.status }}</div>
+  </div>
+  <div class="row">
+    {% if run.status == "running" %}
+      <form method="post" action="/runs/{{ run.id }}/stop"><button class="btn danger">Stop</button></form>
+    {% else %}
+      <form method="post" action="/runs/{{ run.id }}/rerun"><button class="btn primary">Run Cryptid</button></form>
+    {% endif %}
+    {% if run_algo_id %}
+      <a class="btn" href="/algorithms/{{ run_algo_id }}/edit">Edit</a>
+    {% endif %}
+    <a class="btn" href="/runs">Back</a>
+  </div>
+</div>
+
+<div class="grid run-detail-grid" style="margin-top:12px">
+  <div class="card" style="grid-column: span 12;">
+    <h3>Status</h3>
+    <div hx-get="/runs/{{ run.id }}/status" hx-trigger="load, every 2s" hx-swap="innerHTML">Loading…</div>
+  </div>
+  <div class="card" style="grid-column: span 12;">
+    <h3>Assistant Summary</h3>
+    <div class="small">This is a stub — wire to your local model later.</div>
+    <div hx-get="/runs/{{ run.id }}/assistant_summary" hx-trigger="load, every 5s" hx-swap="innerHTML">Loading…</div>
+  </div>
+  <div class="card" style="grid-column: span 12;">
+    <h3>Logs</h3>
+    <div class="small">Auto-refreshes every 2s (last ~400 lines).</div>
+    <div hx-get="/runs/{{ run.id }}/logs" hx-trigger="load, every 2s" hx-swap="innerHTML">Loading…</div>
+  </div>
+</div>
+{% endblock %}

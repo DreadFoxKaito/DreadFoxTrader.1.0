@@ -1,0 +1,3175 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2 style="margin-top:0">Edit Cryptid</h2>
+<div class="card">
+  <form method="post" action="/algorithms/{{ algo_id }}/edit" id="cryptid_form">
+    <label>Base Algo</label>
+    <select name="base_script_id" id="base_script_select" required>
+      <option value="" disabled>Select a base algo</option>
+      {% for s in scripts %}
+        <option value="{{ s.id }}" {% if s.id == base_script_id %}selected{% endif %}>{{ s.name }}</option>
+      {% endfor %}
+    </select>
+    <div id="base_algo_desc" class="small" style="margin-top:6px;"></div>
+
+    <div class="hr" style="margin:14px 0;"></div>
+
+    <label>Cryptid Name</label>
+    <input name="name" value="{{ algo_name }}" required>
+
+    <div style="margin-top:10px">
+      <label>Restart on crash</label>
+      <select name="restart_on_crash">
+        <option value="1" {% if restart_on_crash %}selected{% endif %}>Yes</option>
+        <option value="0" {% if not restart_on_crash %}selected{% endif %}>No</option>
+      </select>
+    </div>
+
+    <div class="hr" style="margin:14px 0;"></div>
+
+    <h3 style="margin:0 0 8px 0;">Strategy Parameters</h3>
+    <div id="param_fields"></div>
+    <input type="hidden" name="params_json" id="params_json" value="{}">
+
+    <div class="row" style="margin-top:12px">
+      <button class="btn primary" type="submit">Save</button>
+      <a class="btn" href="/algorithms">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+  const BASE_ALGO_DEFS = {{ base_algo_defs_json | safe }};
+  const EXISTING_PARAMS = {{ params_json | safe }};
+  const baseSelect = document.getElementById("base_script_select");
+  const baseDesc = document.getElementById("base_algo_desc");
+  const paramFields = document.getElementById("param_fields");
+  const paramsJson = document.getElementById("params_json");
+  let indicatorForgeRules = [];
+
+  function escHtml(s) {
+    return String(s || "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll("\"", "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function renderBaseDescription(desc) {
+    const raw = String(desc || "").trim();
+    if (!raw) {
+      baseDesc.textContent = "Select a base algo to continue.";
+      return;
+    }
+    const parts = raw
+      .split(/(?<=\.)\s+(?=[A-Z0-9])/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (parts.length <= 1) {
+      baseDesc.textContent = raw;
+      return;
+    }
+    baseDesc.innerHTML =
+      "<ul style='margin:6px 0 0 18px; padding:0;'>" +
+      parts.map((p) => `<li style='margin:2px 0;'>${escHtml(p)}</li>`).join("") +
+      "</ul>";
+  }
+
+  function buildInput(def) {
+    const wrap = document.createElement("div");
+    wrap.style.marginBottom = "10px";
+    wrap.dataset.paramWrapKey = def.key;
+
+    const label = document.createElement("label");
+    label.textContent = def.label || def.key;
+    wrap.appendChild(label);
+
+    let input;
+    if (def.type === "select") {
+      input = document.createElement("select");
+      (def.options || []).forEach((opt) => {
+        const o = document.createElement("option");
+        o.value = opt.value;
+        o.textContent = opt.label || opt.value;
+        input.appendChild(o);
+      });
+      if (def.default !== undefined) input.value = String(def.default);
+    } else if (def.type === "boolean") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(def.default);
+    } else if (def.type === "textarea") {
+      input = document.createElement("textarea");
+      input.rows = 6;
+      if (def.placeholder) input.placeholder = def.placeholder;
+      if (def.default !== undefined) input.value = String(def.default);
+    } else {
+      input = document.createElement("input");
+      input.type = def.type === "number" ? "number" : "text";
+      if (def.placeholder) input.placeholder = def.placeholder;
+      if (def.step) input.step = def.step;
+      if (def.default !== undefined) input.value = String(def.default);
+    }
+
+    input.dataset.paramKey = def.key;
+    input.dataset.paramType = def.type || "text";
+    input.dataset.normalize = def.normalize || "";
+    if (def.required) input.required = true;
+    if (def.default !== undefined) input.dataset.defaultValue = String(def.default);
+
+    wrap.appendChild(input);
+
+    if (def.help) {
+      const help = document.createElement("div");
+      help.className = "small";
+      help.textContent = def.help;
+      wrap.appendChild(help);
+    }
+
+    input.addEventListener("input", updateParams);
+    input.addEventListener("change", updateParams);
+    return wrap;
+  }
+
+  function isEntangledTickersPath(pathValue) {
+    const p = String(pathValue || "").toLowerCase();
+    return p.endsWith("scripts/entangledtickers.robinhood.py")
+      || p.endsWith("scripts/entangledtickers.schwab.py");
+  }
+
+  function isIndicatorForge(def) {
+    const p = String((def && def.path) || "").toLowerCase();
+    return p.endsWith("scripts/indicatorforge.robinhood.py")
+      || p.endsWith("scripts/indicatorforge.crypto.robinhood.py")
+      || p.endsWith("scripts/indicatorforge.schwab.py")
+      || isEntangledTickersPath(p);
+  }
+
+  function parseRulesValue(raw) {
+    if (!raw) return [];
+    try {
+      const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!Array.isArray(obj)) return [];
+      return obj
+        .filter((r) => r && typeof r === "object")
+        .flatMap((r) => {
+          const rule = { ...r };
+          const params = rule.params && typeof rule.params === "object" ? { ...rule.params } : {};
+          const kind = String(rule.kind || "").trim().toLowerCase();
+          if (kind === "ma" || kind === "ema") {
+            params.mode = normalizeMaMode(params.mode);
+            if (params.mode === "ribbon") {
+              const levels = maRibbonLevelsFromParams(params);
+              return levels.map((level) => maMappedRuleFromLevel(rule, level));
+            } else if (params.mode === "mapped") {
+              params.above_action = normalizeMaAction(params.above_action);
+              params.below_action = normalizeMaAction(params.below_action);
+            } else {
+              const buyRel = String(params.buy_relation || "").trim().toLowerCase();
+              const sellRel = String(params.sell_relation || "").trim().toLowerCase();
+              if (buyRel === "ignore" || buyRel === "") params.buy_relation = "hold";
+              if (sellRel === "ignore" || sellRel === "") params.sell_relation = "hold";
+            }
+          } else if (kind === "rsi") {
+            const osAction = String(params.oversold_action || "").trim().toLowerCase();
+            const obAction = String(params.overbought_action || "").trim().toLowerCase();
+            if (osAction === "ignore") params.oversold_action = "hold";
+            if (obAction === "ignore") params.overbought_action = "hold";
+          }
+          rule.params = params;
+          return [rule];
+        });
+    } catch (_) {
+      return [];
+    }
+  }
+
+  const MA_RIBBON_LEVEL_ORDER = ["short", "medium", "long"];
+  const MA_RIBBON_DEFAULT_LENGTHS = { short: 30, medium: 78, long: 190 };
+  const MA_RIBBON_LEVEL_LABELS = { short: "Short", medium: "Medium", long: "Long" };
+
+  function normalizeMaMode(raw) {
+    const mode = String(raw || "single").trim().toLowerCase();
+    if (mode === "ribbon" || mode === "ma_ribbon") return "ribbon";
+    if (mode === "mapped" || mode === "level" || mode === "action_map" || mode === "ribbon_level") return "mapped";
+    return "single";
+  }
+
+  function normalizeMaType(raw, fallback = "sma") {
+    const value = String(raw || fallback || "sma").trim().toLowerCase();
+    return value === "ema" ? "ema" : "sma";
+  }
+
+  function normalizeMaAction(raw) {
+    const value = String(raw || "hold").trim().toLowerCase();
+    if (value === "buy" || value === "sell") return value;
+    return "hold";
+  }
+
+  function maRibbonLevelsFromParams(params) {
+    const p = params && typeof params === "object" ? params : {};
+    const bySlot = new Map();
+    if (Array.isArray(p.levels)) {
+      p.levels.forEach((raw) => {
+        if (!raw || typeof raw !== "object") return;
+        const slot = String(raw.slot || raw.name || "").trim().toLowerCase();
+        if (!MA_RIBBON_LEVEL_ORDER.includes(slot) || bySlot.has(slot)) return;
+        bySlot.set(slot, raw);
+      });
+    }
+    const pick = (rawValue, ...fallbacks) => {
+      if (rawValue !== null && rawValue !== undefined && rawValue !== "") return rawValue;
+      for (const item of fallbacks) {
+        if (item !== null && item !== undefined && item !== "") return item;
+      }
+      return null;
+    };
+    return MA_RIBBON_LEVEL_ORDER.map((slot) => {
+      const raw = bySlot.get(slot) || {};
+      const rawLength = pick(raw.length, p[`${slot}_length`], p[`ribbon_${slot}_length`]);
+      return {
+        slot,
+        label: MA_RIBBON_LEVEL_LABELS[slot],
+        ma_type: normalizeMaType(pick(raw.ma_type, p[`${slot}_type`], p[`ribbon_${slot}_type`]), "sma"),
+        length: Math.max(2, parseInt(String(rawLength || MA_RIBBON_DEFAULT_LENGTHS[slot]), 10) || MA_RIBBON_DEFAULT_LENGTHS[slot]),
+        above_action: normalizeMaAction(pick(raw.above_action, p[`${slot}_above_action`], p[`ribbon_${slot}_above_action`])),
+        below_action: normalizeMaAction(pick(raw.below_action, p[`${slot}_below_action`], p[`ribbon_${slot}_below_action`]))
+      };
+    });
+  }
+
+  function maMappedRuleFromLevel(rule, level) {
+    const r = rule && typeof rule === "object" ? rule : {};
+    const params = r.params && typeof r.params === "object" ? r.params : {};
+    const slot = String((level && level.slot) || "").trim().toLowerCase();
+    const lineTag = level && level.ma_type === "ema" ? "EMA" : "SMA";
+    const length = Math.max(2, parseInt(String((level && level.length) || MA_RIBBON_DEFAULT_LENGTHS[slot] || 30), 10) || (MA_RIBBON_DEFAULT_LENGTHS[slot] || 30));
+    const baseName = String(r.name || "MA Ribbon").trim() || "MA Ribbon";
+    const childId = maRibbonLevelRuleId(params.rule_id, slot);
+    return {
+      name: `${baseName} - ${String((level && level.label) || MA_RIBBON_LEVEL_LABELS[slot] || "Level")} ${lineTag}${length}`,
+      kind: "ma",
+      params: {
+        mode: "mapped",
+        ma_type: normalizeMaType(level && level.ma_type, "sma"),
+        length,
+        above_action: normalizeMaAction(level && level.above_action),
+        below_action: normalizeMaAction(level && level.below_action),
+        rule_id: childId || String((params && params.rule_id) || "").trim() || undefined
+      }
+    };
+  }
+
+  function maRibbonLevelRuleId(ruleId, slot) {
+    const rid = String(ruleId || "").trim();
+    const slotKey = String(slot || "").trim().toLowerCase();
+    if (!rid || !MA_RIBBON_LEVEL_ORDER.includes(slotKey)) return "";
+    return `${rid}::${slotKey}`;
+  }
+
+  function maRibbonLevelDisplayName(rule, levelOrSlot) {
+    const r = rule && typeof rule === "object" ? rule : {};
+    const params = r.params && typeof r.params === "object" ? r.params : {};
+    const slot = typeof levelOrSlot === "string"
+      ? String(levelOrSlot).trim().toLowerCase()
+      : String((levelOrSlot && levelOrSlot.slot) || "").trim().toLowerCase();
+    const level = (typeof levelOrSlot === "object" && levelOrSlot)
+      ? levelOrSlot
+      : maRibbonLevelsFromParams(params).find((item) => item.slot === slot);
+    const baseName = String(r.name || r.kind || "RULE").trim() || "RULE";
+    const label = level && level.label ? level.label : (MA_RIBBON_LEVEL_LABELS[slot] || "Level");
+    const lineTag = level && level.ma_type === "ema" ? "EMA" : "SMA";
+    const fallbackLen = MA_RIBBON_DEFAULT_LENGTHS[slot] || 30;
+    const length = Math.max(2, parseInt(String((level && level.length) || fallbackLen), 10) || fallbackLen);
+    return `${baseName} - ${label} ${lineTag}${length}`;
+  }
+
+  function maRibbonLevelSummaryLine(level) {
+    const lineTag = level && level.ma_type === "ema" ? "EMA" : "SMA";
+    const label = String((level && level.label) || "Level");
+    const length = Math.max(2, parseInt(String((level && level.length) || "30"), 10) || 30);
+    const above = String((level && level.above_action) || "hold").toUpperCase();
+    const below = String((level && level.below_action) || "hold").toUpperCase();
+    return `${label} ${lineTag}${length}: above -> ${above}; below -> ${below}.`;
+  }
+
+  function indicatorForgeRuleTargetEntries(options = {}) {
+    const excludeKinds = new Set(
+      Array.isArray(options.excludeKinds)
+        ? options.excludeKinds.map((k) => String(k || "").trim().toLowerCase())
+        : []
+    );
+    const out = [];
+    indicatorForgeRules.forEach((r, i) => {
+      const kindRaw = String(r && r.kind ? r.kind : "").trim().toLowerCase();
+      if (!kindRaw || excludeKinds.has(kindRaw)) return;
+      const kind = escHtml(kindRaw.toUpperCase() || "RULE");
+      const rawName = String(r && r.name ? r.name : "").trim();
+      const name = rawName || `${kindRaw.toUpperCase() || "RULE"}${i + 1}`;
+      const params = r && r.params && typeof r.params === "object" ? r.params : {};
+      const rid = String(params.rule_id || "").trim();
+      if (!rid) return;
+      out.push({
+        id: rid,
+        label: `#${i + 1} ${kindRaw.toUpperCase() || "RULE"} - ${name}`,
+        summary: `#${i + 1} ${name}`
+      });
+      if ((kindRaw === "ma" || kindRaw === "ema") && normalizeMaMode(params.mode) === "ribbon") {
+        maRibbonLevelsFromParams(params).forEach((level) => {
+          const childId = maRibbonLevelRuleId(rid, level.slot);
+          if (!childId) return;
+          const childName = maRibbonLevelDisplayName(r, level);
+          const suffix = String(level.label || "L").charAt(0).toUpperCase() || "L";
+          out.push({
+            id: childId,
+            label: `#${i + 1}.${suffix} MA LEVEL - ${childName}`,
+            summary: `#${i + 1} ${childName}`
+          });
+        });
+      }
+    });
+    return out;
+  }
+
+  function renderIndicatorForgeBuilder() {
+    const existing = document.getElementById("indicator_forge_builder");
+    if (existing) existing.remove();
+    const textarea = paramFields.querySelector('[data-param-key="indicator_rules_json"]');
+    if (!textarea) return;
+    const getInput = (k) => paramFields.querySelector(`[data-param-key="${k}"]`);
+    const allWraps = paramFields.querySelectorAll("[data-param-wrap-key]");
+    allWraps.forEach((w) => { w.style.display = "none"; });
+
+    const symbolsInput = getInput("symbols");
+    const primarySymbolInput = getInput("primary_symbol");
+    const inverseSymbolInput = getInput("inverse_symbol");
+    const timeframeInput = getInput("timeframe");
+    const sleepInput = getInput("sleep_duration");
+    const sharesInput = getInput("shares_per_trade");
+    const tradeAmountInput = getInput("trade_amount");
+    const orderSizeInput = tradeAmountInput || sharesInput;
+    const orderSizeLabel = tradeAmountInput ? "Trade Amount ($)" : "Shares per Trade";
+    const orderSizeStep = tradeAmountInput ? "0.01" : "1";
+    const trailAmountInput = getInput("trailing_stop_amount");
+    const trailModeInput = getInput("trailing_stop_mode");
+    const trailAtrMultInput = getInput("trailing_stop_atr_mult");
+    const buyOrderTypeInput = getInput("buy_order_type");
+    const sellOrderTypeInput = getInput("sell_order_type");
+    const stoplossEnabledInput = getInput("stoploss_enabled");
+    const allowExtendedHoursInput = getInput("allow_extended_hours_orders");
+    const includeExtendedHoursDataInput = getInput("include_extended_hours_data");
+    const allowOvernightInput = getInput("allow_seamless_overnight_orders");
+    const targetGainInput = getInput("target_gain_pct");
+    const stopLossPctInput = getInput("stop_loss_pct");
+    const capRuleEnabledInput = getInput("portfolio_cap_rule_enabled");
+    const capModeInput = getInput("portfolio_cap_mode");
+    const capPercentInput = getInput("portfolio_cap_percent_by_symbol");
+    const capCashInput = getInput("portfolio_cash_percent");
+    const capCashSourceInput = getInput("portfolio_cash_source");
+    const capDivisorInput = getInput("portfolio_cap_divisor");
+    const curDef = BASE_ALGO_DEFS[String(baseSelect.value)] || {};
+    const curPath = String((curDef && curDef.path) || "").toLowerCase();
+    const isEntangledTickers = isEntangledTickersPath(curPath);
+    const isRobinhoodStockIndicatorForge = curPath.endsWith("scripts/indicatorforge.robinhood.py")
+      || curPath.endsWith("scripts/entangledtickers.robinhood.py");
+    const isStockIndicatorForge = curPath.endsWith("scripts/indicatorforge.schwab.py")
+      || curPath.endsWith("scripts/indicatorforge.robinhood.py")
+      || curPath.endsWith("scripts/entangledtickers.schwab.py")
+      || curPath.endsWith("scripts/entangledtickers.robinhood.py");
+    const orderTypeOptionHtml = isStockIndicatorForge
+      ? "<option value='market'>Market</option><option value='trailing_stop'>Trailing Stop</option><option value='limit_midpoint'>Limit Midpoint (Bid/Ask)</option>"
+      : "<option value='market'>Market</option><option value='local_trailing'>Local Trailing</option>";
+    const showOvernightInput = Boolean(allowOvernightInput);
+    const overnightLabel = isRobinhoodStockIndicatorForge
+      ? "Allow Robinhood Overnight Trading (all-day limit orders)"
+      : "Enable Overnight Session (SEAMLESS)";
+    const extendedOrdersLabel = isRobinhoodStockIndicatorForge
+      ? "Allow Robinhood Extended Hours (premarket/after-hours midpoint limit orders)"
+      : "Allow Extended Hours Trading";
+
+    indicatorForgeRules = parseRulesValue(textarea.value || "");
+    let ruleIdSeq = 0;
+
+    function nextRuleId() {
+      ruleIdSeq += 1;
+      return `ifr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}_${ruleIdSeq}`;
+    }
+
+    function ensureRuleIdentity(rule) {
+      if (!rule || typeof rule !== "object") return;
+      if (!rule.params || typeof rule.params !== "object") rule.params = {};
+      const existing = String(rule.params.rule_id || "").trim();
+      if (!existing) rule.params.rule_id = nextRuleId();
+    }
+
+    function ensureAllRuleIdentity() {
+      indicatorForgeRules.forEach((r) => ensureRuleIdentity(r));
+    }
+
+    const b = document.createElement("div");
+    b.id = "indicator_forge_builder";
+    b.className = "grid";
+    b.style.marginTop = "10px";
+    b.innerHTML = `
+      <div class="card" style="grid-column: span 12;">
+        <h3 style="margin:0 0 8px 0;">IndicatorForge Builder</h3>
+        <div class="small">Same indicator engine as Markets, but rules are local to this cryptid and saved into <code>indicator_rules_json</code>.</div>
+      </div>
+      <div class="card" style="grid-column: span 12;">
+        <h3 style="margin:0 0 8px 0;">${isEntangledTickers ? "Entanglement" : "Scan Universe"}</h3>
+        <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top:10px;">
+          ${isEntangledTickers
+            ? "<div><label>Primary Symbol</label><input id='if_exec_primary_symbol' placeholder='AAPL' /></div><div><label>Inverse Symbol</label><input id='if_exec_inverse_symbol' placeholder='MSFT' /></div>"
+            : "<div><label>Symbols</label><input id='if_exec_symbols' placeholder='AAPL, MSFT' /></div>"}
+          <div><label>Timeframe</label><select id="if_exec_timeframe"></select></div>
+        </div>
+      </div>
+      <div class="card" style="grid-column: span 12;">
+        <h3 style="margin:0 0 8px 0;">Indicator Rules</h3>
+        <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top:10px;">
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Moving Average Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_ma_name" placeholder="Name (optional)" style="width:100%;" />
+              <select id="if_ma_mode"><option value="single" selected>Single Line Mode</option><option value="ribbon">Ribbon Mode</option></select>
+            </div>
+            <div id="if_ma_single_wrap" class="row" style="margin-top:8px;">
+              <select id="if_ma_type"><option value="sma" selected>SMA</option><option value="ema">EMA</option></select>
+              <input id="if_ma_length" type="number" min="2" step="1" value="30" placeholder="Length" style="width:100px;" />
+              <select id="if_ma_buy"><option value="above">Buy: price above line</option><option value="below">Buy: price below line</option><option value="hold">Buy: hold</option></select>
+              <select id="if_ma_sell"><option value="above">Sell: price above line</option><option value="below">Sell: price below line</option><option value="hold">Sell: hold</option></select>
+              <label class="small"><input id="if_ma_d_on" type="checkbox" /> Track derivative</label>
+              <input id="if_ma_d_buy" type="number" step="0.0001" placeholder="dLine buy >=" style="width:120px;" />
+              <input id="if_ma_d_sell" type="number" step="0.0001" placeholder="dLine sell <=" style="width:120px;" />
+              <label class="small"><input id="if_ma_unless_on" type="checkbox" /> Use Unless Override</label>
+              <select id="if_ma_unless_rel"><option value="above">Unless line is above</option><option value="below">Unless line is below</option></select>
+              <select id="if_ma_unless_type"><option value="sma">Unless target SMA</option><option value="ema">Unless target EMA</option></select>
+              <input id="if_ma_unless_len" type="number" min="2" step="1" value="78" style="width:120px;" />
+              <select id="if_ma_unless_action"><option value="sell">Override -> Sell</option><option value="buy">Override -> Buy</option></select>
+            </div>
+            <div id="if_ma_ribbon_wrap" class="grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px; display:none; margin-top:8px;">
+              <div class="card" style="padding:8px;">
+                <div class="small"><b>Short</b></div>
+                <div class="row" style="margin-top:8px;">
+                  <select id="if_ma_ribbon_short_type"><option value="sma" selected>SMA</option><option value="ema">EMA</option></select>
+                  <input id="if_ma_ribbon_short_length" type="number" min="2" step="1" value="30" placeholder="Length" style="width:100px;" />
+                  <select id="if_ma_ribbon_short_above"><option value="buy">Above -> Buy</option><option value="sell">Above -> Sell</option><option value="hold">Above -> Hold</option></select>
+                  <select id="if_ma_ribbon_short_below"><option value="hold">Below -> Hold</option><option value="buy">Below -> Buy</option><option value="sell">Below -> Sell</option></select>
+                </div>
+              </div>
+              <div class="card" style="padding:8px;">
+                <div class="small"><b>Medium</b></div>
+                <div class="row" style="margin-top:8px;">
+                  <select id="if_ma_ribbon_medium_type"><option value="sma" selected>SMA</option><option value="ema">EMA</option></select>
+                  <input id="if_ma_ribbon_medium_length" type="number" min="2" step="1" value="78" placeholder="Length" style="width:100px;" />
+                  <select id="if_ma_ribbon_medium_above"><option value="buy">Above -> Buy</option><option value="sell">Above -> Sell</option><option value="hold">Above -> Hold</option></select>
+                  <select id="if_ma_ribbon_medium_below"><option value="hold">Below -> Hold</option><option value="buy">Below -> Buy</option><option value="sell">Below -> Sell</option></select>
+                </div>
+              </div>
+              <div class="card" style="padding:8px;">
+                <div class="small"><b>Long</b></div>
+                <div class="row" style="margin-top:8px;">
+                  <select id="if_ma_ribbon_long_type"><option value="sma" selected>SMA</option><option value="ema">EMA</option></select>
+                  <input id="if_ma_ribbon_long_length" type="number" min="2" step="1" value="190" placeholder="Length" style="width:100px;" />
+                  <select id="if_ma_ribbon_long_above"><option value="buy">Above -> Buy</option><option value="sell">Above -> Sell</option><option value="hold">Above -> Hold</option></select>
+                  <select id="if_ma_ribbon_long_below"><option value="hold">Below -> Hold</option><option value="buy">Below -> Buy</option><option value="sell">Below -> Sell</option></select>
+                </div>
+              </div>
+            </div>
+            <div class="small" id="if_ma_mode_summary" style="margin-top:8px;"></div>
+            <div class="row" style="margin-top:8px;">
+              <button type="button" class="btn primary" id="if_add_ma">Save Moving Average Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add RSI Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_rsi_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_rsi_oversold" type="number" step="0.1" value="30" placeholder="Oversold level" style="width:130px;" />
+              <select id="if_rsi_oversold_rel"><option value="below">Oversold: below</option><option value="above">Oversold: above</option></select>
+              <select id="if_rsi_oversold_action"><option value="buy">Oversold -> Buy</option><option value="sell">Oversold -> Sell</option><option value="hold">Oversold -> Hold</option></select>
+              <input id="if_rsi_overbought" type="number" step="0.1" value="70" placeholder="Overbought level" style="width:140px;" />
+              <select id="if_rsi_overbought_rel"><option value="above">Overbought: above</option><option value="below">Overbought: below</option></select>
+              <select id="if_rsi_overbought_action"><option value="sell">Overbought -> Sell</option><option value="buy">Overbought -> Buy</option><option value="hold">Overbought -> Hold</option></select>
+              <label class="small"><input id="if_rsi_sig_override_on" type="checkbox" /> Allow RSI to override selected saved rule signals</label>
+              <div id="if_rsi_sig_override_wrap" style="width:100%;">
+                <label>RSI Override Scope</label>
+                <select id="if_rsi_sig_override_scope">
+                  <option value="both" selected>Overwrite BUY and SELL</option>
+                  <option value="buy">Overwrite BUY only</option>
+                  <option value="sell">Overwrite SELL only</option>
+                </select>
+                <label>RSI Override Targets</label>
+                <select id="if_rsi_sig_override_targets" multiple size="4" style="width:100%;"></select>
+                <div class="small">Scope controls whether RSI can overwrite BUY checks, SELL checks, or both on selected target rules.</div>
+              </div>
+              <button type="button" class="btn primary" id="if_add_rsi">Save RSI Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add MACD Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_macd_name" placeholder="Name (optional)" style="width:100%;" />
+              <select id="if_macd_mode">
+                <option value="signal_cross">1. Signal Cross (classic)</option>
+                <option value="cross_regime">2. Cross + Regime Filter</option>
+                <option value="hist_momentum">3. Histogram Momentum</option>
+                <option value="zero_reclaim_loss">4. Zero-Line Reclaim/Loss</option>
+                <option value="macd_derivative_sign">5. MACD Derivative Sign</option>
+              </select>
+              <input id="if_macd_fast" type="number" min="2" step="1" value="12" placeholder="Fast EMA" style="width:100px;" />
+              <input id="if_macd_slow" type="number" min="2" step="1" value="26" placeholder="Slow EMA" style="width:100px;" />
+              <input id="if_macd_signal" type="number" min="2" step="1" value="9" placeholder="Signal EMA" style="width:100px;" />
+              <div id="if_macd_derivative_wrap" style="width:100%; display:none;">
+                <input id="if_macd_d_buy" type="number" step="0.0001" placeholder="Buy when dMACD >" style="width:170px;" />
+                <input id="if_macd_d_sell" type="number" step="0.0001" placeholder="Sell when dMACD <" style="width:170px;" />
+                <select id="if_macd_d_scope" style="width:190px;">
+                  <option value="both" selected>dMACD side: BUY and SELL</option>
+                  <option value="buy">dMACD side: BUY only</option>
+                  <option value="sell">dMACD side: SELL only</option>
+                </select>
+                <div class="small">Used only for MACD Derivative Sign mode. This is separate from MACD override settings.</div>
+              </div>
+              <div id="if_macd_summary" class="small" style="width:100%;"></div>
+              <label class="small"><input id="if_macd_sig_override_on" type="checkbox" /> Allow MACD to override selected saved rule signals</label>
+              <div id="if_macd_sig_override_wrap" style="width:100%;">
+                <label>MACD Override Scope</label>
+                <select id="if_macd_sig_override_scope">
+                  <option value="both" selected>Overwrite BUY and SELL</option>
+                  <option value="buy">Overwrite BUY only</option>
+                  <option value="sell">Overwrite SELL only</option>
+                </select>
+                <label>MACD Override Targets</label>
+                <select id="if_macd_sig_override_targets" multiple size="4" style="width:100%;"></select>
+                <div class="small">Scope controls whether MACD can overwrite BUY checks, SELL checks, or both on selected target rules.</div>
+              </div>
+              <button type="button" class="btn primary" id="if_add_macd">Save MACD Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add RSI Derivative Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_drsi_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_drsi_buy" type="number" step="0.0001" placeholder="buy when drsi>=" style="width:160px;" />
+              <input id="if_drsi_sell" type="number" step="0.0001" placeholder="sell when drsi<=" style="width:160px;" />
+              <button type="button" class="btn primary" id="if_add_drsi">Save dRSI Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add ROC Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_roc_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_roc_length" type="number" min="1" step="1" value="12" placeholder="Length" style="width:100px;" />
+              <select id="if_roc_buy_cond">
+                <option value="momentum_long" selected>BUY: momentum long</option>
+                <option value="roc_cross_up_zero">BUY: ROC cross up zero</option>
+                <option value="roc_above_threshold">BUY: ROC above threshold</option>
+                <option value="roc_cross_up_threshold">BUY: ROC cross up threshold</option>
+                <option value="roc_increasing">BUY: ROC increasing</option>
+                <option value="roc_positive">BUY: ROC positive</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_roc_sell_cond">
+                <option value="momentum_short" selected>SELL: momentum short</option>
+                <option value="roc_cross_down_zero">SELL: ROC cross down zero</option>
+                <option value="roc_below_threshold">SELL: ROC below threshold</option>
+                <option value="roc_cross_down_threshold">SELL: ROC cross down threshold</option>
+                <option value="roc_decreasing">SELL: ROC decreasing</option>
+                <option value="roc_negative">SELL: ROC negative</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <input id="if_roc_buy_thr" type="number" step="0.01" value="0" placeholder="BUY threshold %" style="width:140px;" />
+              <input id="if_roc_sell_thr" type="number" step="0.01" value="0" placeholder="SELL threshold %" style="width:140px;" />
+              <div class="small">ROC is percent change from N bars ago. Threshold conditions use the matching BUY/SELL threshold fields.</div>
+              <div id="if_roc_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_roc">Save ROC Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Parabolic SAR Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_sar_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_sar_step" type="text" inputmode="decimal" value="0.02" placeholder="Step (AF)" style="width:130px;" />
+              <input id="if_sar_max" type="text" inputmode="decimal" value="0.2" placeholder="Max AF" style="width:130px;" />
+              <select id="if_sar_buy_cond">
+                <option value="sar_cross_up" selected>BUY: price crosses above SAR</option>
+                <option value="price_above_sar">BUY: price above SAR</option>
+                <option value="sar_rising">BUY: SAR rising</option>
+                <option value="trend_long">BUY: trend long (above + rising)</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_sar_sell_cond">
+                <option value="sar_cross_down" selected>SELL: price crosses below SAR</option>
+                <option value="price_below_sar">SELL: price below SAR</option>
+                <option value="sar_falling">SELL: SAR falling</option>
+                <option value="trend_short">SELL: trend short (below + falling)</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <div class="small">Parabolic SAR uses acceleration factor step/max controls to tighten trailing points in strong trends.</div>
+              <div id="if_sar_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_sar">Save SAR Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Bollinger Bands Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_bb_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_bb_length" type="number" min="2" step="1" value="20" placeholder="Length" style="width:100px;" />
+              <input id="if_bb_std_mult" type="number" min="0.1" step="0.1" value="2.0" placeholder="StdDev" style="width:100px;" />
+              <select id="if_bb_buy_cond">
+                <option value="touch_lower" selected>BUY: touch lower band</option>
+                <option value="touch_upper">BUY: touch upper band</option>
+                <option value="close_outside_lower">BUY: close outside lower</option>
+                <option value="close_outside_upper">BUY: close outside upper</option>
+                <option value="reenter_from_below">BUY: re-enter from below</option>
+                <option value="reenter_from_above">BUY: re-enter from above</option>
+                <option value="width_increasing">BUY: width increasing</option>
+                <option value="width_decreasing">BUY: width decreasing</option>
+                <option value="width_below_threshold">BUY: squeeze (width below threshold)</option>
+                <option value="width_expanding_from_squeeze">BUY: width expanding from squeeze</option>
+                <option value="above_middle">BUY: price above middle band</option>
+                <option value="below_middle">BUY: price below middle band</option>
+                <option value="percent_b_above">BUY: %B above threshold</option>
+                <option value="percent_b_below">BUY: %B below threshold</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_bb_sell_cond">
+                <option value="touch_upper" selected>SELL: touch upper band</option>
+                <option value="touch_lower">SELL: touch lower band</option>
+                <option value="close_outside_upper">SELL: close outside upper</option>
+                <option value="close_outside_lower">SELL: close outside lower</option>
+                <option value="reenter_from_above">SELL: re-enter from above</option>
+                <option value="reenter_from_below">SELL: re-enter from below</option>
+                <option value="width_decreasing">SELL: width decreasing</option>
+                <option value="width_increasing">SELL: width increasing</option>
+                <option value="width_below_threshold">SELL: squeeze (width below threshold)</option>
+                <option value="width_expanding_from_squeeze">SELL: width expanding from squeeze</option>
+                <option value="above_middle">SELL: price above middle band</option>
+                <option value="below_middle">SELL: price below middle band</option>
+                <option value="percent_b_above">SELL: %B above threshold</option>
+                <option value="percent_b_below">SELL: %B below threshold</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <input id="if_bb_squeeze" type="number" step="0.01" value="5.0" placeholder="Squeeze width % <= " style="width:170px;" />
+              <input id="if_bb_pctb_buy" type="number" step="0.01" value="0.2" placeholder="%B buy threshold" style="width:150px;" />
+              <input id="if_bb_pctb_sell" type="number" step="0.01" value="0.8" placeholder="%B sell threshold" style="width:150px;" />
+              <div class="small">Touches/re-entries use band interactions. Width threshold is in percent. %B thresholds are normalized (0-1).</div>
+              <div id="if_bb_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_bb">Save Bollinger Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Ichimoku Cloud Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_ichi_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_ichi_tenkan" type="number" min="1" step="1" value="9" placeholder="Conversion Line" style="width:90px;" />
+              <input id="if_ichi_kijun" type="number" min="1" step="1" value="26" placeholder="Base Line" style="width:90px;" />
+              <input id="if_ichi_senkou_b" type="number" min="2" step="1" value="52" placeholder="Leading Span B" style="width:95px;" />
+              <input id="if_ichi_displacement" type="number" min="1" step="1" value="26" placeholder="Disp" style="width:90px;" />
+              <select id="if_ichi_preset" style="width:330px;">
+                <option value="">Preset strategy (optional)</option>
+                <option value="institutional_trend_rider">Institutional Trend Rider</option>
+                <option value="breakout_retest">Breakout -> Retest</option>
+                <option value="early_trend_capture">Early Trend Capture</option>
+                <option value="trend_pullback_kijun">Trend Pullback (Base Line Reversion)</option>
+                <option value="exhaustion_reversal">Exhaustion / Blow-Off Reversal</option>
+                <option value="chop_filter">Chop Filter (Global Block)</option>
+                <option value="trend_weakening_exit">Trend Weakening / Exit Logic</option>
+              </select>
+              <button type="button" class="btn" id="if_ichi_apply_preset">Apply Preset</button>
+              <select id="if_ichi_buy_mode" style="width:155px;">
+                <option value="all" selected>BUY match: ALL</option>
+                <option value="any">BUY match: ANY</option>
+              </select>
+              <select id="if_ichi_sell_mode" style="width:155px;">
+                <option value="all" selected>SELL match: ALL</option>
+                <option value="any">SELL match: ANY</option>
+              </select>
+              <select id="if_ichi_block_mode" style="width:170px;">
+                <option value="all" selected>BLOCK match: ALL</option>
+                <option value="any">BLOCK match: ANY</option>
+              </select>
+              <select id="if_ichi_buy_cond" multiple size="1" data-expanded-size="12">
+                <option value="strong_long_confirm" selected>BUY: stacked long confirmation</option>
+                <option value="full_bullish_stack">BUY: full bullish stack (3/3)</option>
+                <option value="partial_bullish_stack">BUY: partial bullish stack (2/3)</option>
+                <option value="price_above_cloud">BUY: price above live cloud</option>
+                <option value="price_inside_cloud">BUY: price inside live cloud</option>
+                <option value="price_above_tenkan_kijun_below_cloud">BUY: price above Conversion Line/Base Line, below past cloud</option>
+                <option value="price_above_tenkan_kijun_inside_cloud">BUY: price above Conversion Line/Base Line, inside past cloud</option>
+                <option value="cloud_bullish">BUY: live cloud bullish (A > B)</option>
+                <option value="tenkan_cross_above">BUY: Conversion Line crosses above Base Line</option>
+                <option value="tenkan_above_kijun">BUY: Conversion Line above Base Line</option>
+                <option value="future_twist_bullish">BUY: future cloud twist bullish</option>
+                <option value="approaching_future_twist_bullish">BUY: price approaching future bullish twist</option>
+                <option value="delayed_bullish_cross_valid">BUY: delayed bullish cross still valid</option>
+                <option value="bullish_cross_strong_above_cloud">BUY: strong bullish cross (above live cloud)</option>
+                <option value="bullish_cross_medium_at_cloud">BUY: medium bullish cross (at live cloud)</option>
+                <option value="bullish_cross_weak_below_cloud">BUY: weak bullish cross (below live cloud)</option>
+                <option value="chikou_above_price">BUY: Lagging Line above price</option>
+                <option value="chikou_clears_past_cloud_bullish">BUY: Lagging Line clears past cloud (bullish)</option>
+                <option value="chikou_blocked_by_past_price">BUY: Lagging Line blocked by past price</option>
+                <option value="chikou_in_congestion_zone">BUY: Lagging Line in congestion zone</option>
+                <option value="cloud_breakout_bullish">BUY: bullish live cloud breakout</option>
+                <option value="bullish_breakout_retest_hold">BUY: breakout retest live cloud top hold</option>
+                <option value="shallow_cloud_entry_from_below">BUY: shallow cloud entry from below</option>
+                <option value="deep_inside_cloud">BUY: price deep inside live cloud</option>
+                <option value="cloud_exit_up_with_momentum">BUY: price exits live cloud up with momentum</option>
+                <option value="price_extended_above_cloud">BUY: price extended far above live cloud</option>
+                <option value="price_stretched_above_kijun">BUY: price stretched above Base Line</option>
+                <option value="kijun_bounce_bullish">BUY: bullish Base Line bounce</option>
+                <option value="kijun_flat">BUY: Base Line flat (magnet level)</option>
+                <option value="kijun_rising">BUY: Base Line rising</option>
+                <option value="tenkan_accelerating_up">BUY: Conversion Line slope accelerating up</option>
+                <option value="cloud_rejection_bullish">BUY: live cloud rejection bullish</option>
+                <option value="bullish_to_neutral_transition">BUY: bullish to neutral transition</option>
+                <option value="cloud_expanding">BUY: cloud expanding</option>
+                <option value="cloud_contracting">BUY: cloud contracting</option>
+                <option value="cloud_thin_to_thick">BUY: cloud thin -> thick</option>
+                <option value="bullish_stack_weakening">BUY: bullish stack weakening</option>
+                <option value="cloud_thickness_above">BUY: live cloud thickness above threshold</option>
+                <option value="cloud_thickness_below">BUY: live cloud thickness below threshold</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_ichi_sell_cond" multiple size="1" data-expanded-size="12">
+                <option value="strong_short_confirm" selected>SELL: stacked short confirmation</option>
+                <option value="full_bearish_stack">SELL: full bearish stack (3/3)</option>
+                <option value="partial_bearish_stack">SELL: partial bearish stack (2/3)</option>
+                <option value="price_below_cloud">SELL: price below live cloud</option>
+                <option value="price_inside_cloud">SELL: price inside live cloud</option>
+                <option value="price_below_tenkan_kijun_above_cloud">SELL: price below Conversion Line/Base Line, above past cloud</option>
+                <option value="price_below_tenkan_kijun_inside_cloud">SELL: price below Conversion Line/Base Line, inside past cloud</option>
+                <option value="cloud_bearish">SELL: live cloud bearish (A < B)</option>
+                <option value="tenkan_cross_below">SELL: Conversion Line crosses below Base Line</option>
+                <option value="tenkan_below_kijun">SELL: Conversion Line below Base Line</option>
+                <option value="future_twist_bearish">SELL: future cloud twist bearish</option>
+                <option value="approaching_future_twist_bearish">SELL: price approaching future bearish twist</option>
+                <option value="delayed_bearish_cross_valid">SELL: delayed bearish cross still valid</option>
+                <option value="bearish_cross_strong_below_cloud">SELL: strong bearish cross (below live cloud)</option>
+                <option value="bearish_cross_medium_at_cloud">SELL: medium bearish cross (at live cloud)</option>
+                <option value="bearish_cross_weak_above_cloud">SELL: weak bearish cross (above live cloud)</option>
+                <option value="chikou_below_price">SELL: Lagging Line below price</option>
+                <option value="chikou_clears_past_cloud_bearish">SELL: Lagging Line clears past cloud (bearish)</option>
+                <option value="chikou_blocked_by_past_price">SELL: Lagging Line blocked by past price</option>
+                <option value="chikou_in_congestion_zone">SELL: Lagging Line in congestion zone</option>
+                <option value="cloud_breakout_bearish">SELL: bearish live cloud breakdown</option>
+                <option value="bearish_breakdown_retest_fail">SELL: breakdown retest live cloud bottom fail</option>
+                <option value="shallow_cloud_entry_from_above">SELL: shallow cloud entry from above</option>
+                <option value="deep_inside_cloud">SELL: price deep inside live cloud</option>
+                <option value="cloud_exit_down_with_momentum">SELL: price exits live cloud down with momentum</option>
+                <option value="price_extended_below_cloud">SELL: price extended far below live cloud</option>
+                <option value="price_stretched_below_kijun">SELL: price stretched below Base Line</option>
+                <option value="kijun_reject_bearish">SELL: bearish Base Line rejection</option>
+                <option value="kijun_flat">SELL: Base Line flat (magnet level)</option>
+                <option value="kijun_falling">SELL: Base Line falling</option>
+                <option value="tenkan_accelerating_down">SELL: Conversion Line slope accelerating down</option>
+                <option value="cloud_rejection_bearish">SELL: live cloud rejection bearish</option>
+                <option value="bearish_to_neutral_transition">SELL: bearish to neutral transition</option>
+                <option value="cloud_expanding">SELL: cloud expanding</option>
+                <option value="cloud_contracting">SELL: cloud contracting</option>
+                <option value="cloud_thin_to_thick">SELL: cloud thin -> thick</option>
+                <option value="bearish_stack_weakening">SELL: bearish stack weakening</option>
+                <option value="weak_cross_inside_cloud">SELL: weak cross inside live cloud</option>
+                <option value="cloud_thickness_above">SELL: live cloud thickness above threshold</option>
+                <option value="cloud_thickness_below">SELL: live cloud thickness below threshold</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <select id="if_ichi_block_cond" multiple size="1" data-expanded-size="10">
+                <option value="hold" selected>BLOCK/HOLD: disabled</option>
+              </select>
+              <input id="if_ichi_thickness" type="number" step="0.01" value="1.0" placeholder="Cloud thickness % threshold" style="width:200px;" />
+              <input id="if_ichi_kijun_tol" type="number" step="0.01" value="0.35" placeholder="Base Line bounce tolerance %" style="width:200px;" />
+              <input id="if_ichi_delayed_lookback" type="number" min="1" step="1" value="3" placeholder="Delayed cross lookback bars" style="width:220px;" />
+              <div id="if_ichi_preset_desc" class="small" style="width:100%;"></div>
+              <div class="small">Supports twist timing, cross quality tiers, extension/geometry checks, cloud-depth transitions, retests, Lagging Line structure checks, and stack-strength states.</div>
+              <div id="if_ichi_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_ichi">Save Ichimoku Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add TTM Squeeze Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_ttm_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_ttm_bb_len" type="number" min="2" step="1" value="20" placeholder="BB length" style="width:110px;" />
+              <input id="if_ttm_bb_mult" type="number" min="0.1" step="0.1" value="2.0" placeholder="BB mult" style="width:100px;" />
+              <input id="if_ttm_kc_len" type="number" min="2" step="1" value="20" placeholder="KC length" style="width:110px;" />
+              <input id="if_ttm_kc_mult" type="number" min="0.1" step="0.1" value="1.5" placeholder="KC mult" style="width:100px;" />
+              <input id="if_ttm_mom_len" type="number" min="2" step="1" value="20" placeholder="Momentum length" style="width:150px;" />
+              <select id="if_ttm_buy_cond">
+                <option value="long_release" selected>BUY: long release (fired + momentum > 0)</option>
+                <option value="long_trend">BUY: long trend (squeeze off + rising momentum)</option>
+                <option value="squeeze_fired">BUY: squeeze fired</option>
+                <option value="squeeze_on">BUY: squeeze on</option>
+                <option value="squeeze_off">BUY: squeeze off</option>
+                <option value="momentum_above_zero">BUY: momentum above zero</option>
+                <option value="momentum_increasing">BUY: momentum increasing</option>
+                <option value="momentum_cross_up">BUY: momentum cross up</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_ttm_sell_cond">
+                <option value="short_release" selected>SELL: short release (fired + momentum < 0)</option>
+                <option value="short_trend">SELL: short trend (squeeze off + falling momentum)</option>
+                <option value="squeeze_fired">SELL: squeeze fired</option>
+                <option value="squeeze_on">SELL: squeeze on</option>
+                <option value="squeeze_off">SELL: squeeze off</option>
+                <option value="momentum_below_zero">SELL: momentum below zero</option>
+                <option value="momentum_decreasing">SELL: momentum decreasing</option>
+                <option value="momentum_cross_down">SELL: momentum cross down</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <div class="small">TTM squeeze = Bollinger inside Keltner channel. Momentum uses centered linear-regression endpoint.</div>
+              <div id="if_ttm_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_ttm">Save TTM Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Heikin Ashi Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_ha_name" placeholder="Name (optional)" style="width:100%;" />
+              <select id="if_ha_mode">
+                <option value="transition" selected>Mode: Transition Flip</option>
+                <option value="state">Mode: Candle State</option>
+              </select>
+              <input id="if_ha_doji_tol" type="number" min="0" step="0.001" placeholder="Doji tolerance %" style="width:150px;" />
+              <label class="small"><input id="if_ha_sig_override_on" type="checkbox" /> Allow Heikin Ashi to override selected saved rule signals</label>
+              <div id="if_ha_sig_override_wrap" style="width:100%;">
+                <label>Heikin Ashi Override Scope</label>
+                <select id="if_ha_sig_override_scope">
+                  <option value="both" selected>Overwrite BUY and SELL</option>
+                  <option value="buy">Overwrite BUY only</option>
+                  <option value="sell">Overwrite SELL only</option>
+                </select>
+                <label>Heikin Ashi Override Targets</label>
+                <select id="if_ha_sig_override_targets" multiple size="4" style="width:100%;"></select>
+                <div class="small">Scope controls whether Heikin Ashi can overwrite BUY checks, SELL checks, or both on selected target rules.</div>
+              </div>
+              <div id="if_ha_summary" class="small">Transition: buy bearish→bullish, sell bullish→bearish.</div>
+              <button type="button" class="btn primary" id="if_add_ha">Save Heikin Ashi Rule</button>
+            </div>
+          </div>
+        </div>
+        <div id="if_rules_list" style="margin-top:10px;"></div>
+      </div>
+      <div class="card" style="grid-column: span 12;">
+        <h3 style="margin:0 0 8px 0;">Indicator Scanner</h3>
+        <div class="small">Live preview from current unsaved rules.</div>
+        <input type="hidden" id="if_preview_symbols" name="symbols" value="" />
+        <input type="hidden" id="if_preview_timeframe" name="timeframe" value="" />
+        <input type="hidden" id="if_preview_rules_json" name="rules_json" value="[]" />
+        <input type="hidden" id="if_preview_broker_hint" name="broker_hint" value="robinhood" />
+        <input type="hidden" id="if_preview_include_extended" name="include_extended_hours_data" value="false" />
+        <input type="hidden" id="if_preview_entangled_mode" name="entangled_mode" value="false" />
+        <input type="hidden" id="if_preview_primary_symbol" name="entangled_primary_symbol" value="" />
+        <input type="hidden" id="if_preview_inverse_symbol" name="entangled_inverse_symbol" value="" />
+        <div id="if_preview_table"
+             hx-get="/partials/indicatorforge_preview"
+             hx-include="#if_preview_symbols, #if_preview_timeframe, #if_preview_rules_json, #if_preview_broker_hint, #if_preview_include_extended, #if_preview_entangled_mode, #if_preview_primary_symbol, #if_preview_inverse_symbol"
+             hx-trigger="every 20s"
+             hx-swap="innerHTML">Loading…</div>
+      </div>
+      <div class="card" style="grid-column: span 12;">
+        <h3 style="margin:0 0 8px 0;">Quick Backtest</h3>
+        <div class="row" style="align-items:flex-end; margin-bottom:8px;">
+          <div style="min-width:180px;">
+            <label class="small" for="if_backtest_candles">Lookback Candles</label>
+            <input id="if_backtest_candles" name="backtest_candles" type="number" min="40" max="5000" step="10" value="1000" style="width:180px;" />
+          </div>
+          <button type="button" class="btn" id="if_backtest_refresh_btn">Refresh Calculations</button>
+          <div class="small">Uses the current unsaved rules and the same market data source as scanner preview.</div>
+        </div>
+        <input type="hidden" id="if_backtest_stoploss_enabled" name="stoploss_enabled" value="false" />
+        <input type="hidden" id="if_backtest_target_gain_pct" name="target_gain_pct" value="" />
+        <input type="hidden" id="if_backtest_stop_loss_pct" name="stop_loss_pct" value="" />
+        <input type="hidden" id="if_backtest_nonce" name="_nonce" value="" />
+        <div id="if_backtest_table"
+             hx-get="/partials/indicatorforge_backtest"
+             hx-include="#if_preview_symbols, #if_preview_timeframe, #if_preview_rules_json, #if_preview_broker_hint, #if_preview_include_extended, #if_preview_entangled_mode, #if_preview_primary_symbol, #if_preview_inverse_symbol, #if_backtest_candles, #if_backtest_stoploss_enabled, #if_backtest_target_gain_pct, #if_backtest_stop_loss_pct, #if_backtest_nonce"
+             hx-trigger="every 30s, indicatorforge-backtest-refresh"
+             hx-swap="innerHTML">Loading…</div>
+        <div class="hr" style="margin:14px 0;"></div>
+        <h3 style="margin:0 0 8px 0;">DreadFox Strategy Forge</h3>
+        <div class="row" style="align-items:flex-end; margin-bottom:8px;">
+          <div style="min-width:260px;">
+            <label class="small">Search Mode</label>
+            <div class="small">Open combo evolution: tests 2+ indicators, mutates settings, and keeps higher-return candidates.</div>
+          </div>
+          <div style="min-width:120px;">
+            <label class="small" for="if_forge_trials">Max Evaluations</label>
+            <input id="if_forge_trials" name="trials" type="number" min="1" max="5000" step="1" value="250" style="width:120px;" />
+          </div>
+          <div style="min-width:140px;">
+            <label class="small" for="if_forge_min_trades">Min Trades</label>
+            <input id="if_forge_min_trades" name="min_trades" type="number" min="1" max="10000" step="1" value="100" style="width:140px;" />
+          </div>
+          <button type="button" class="btn primary" id="if_forge_run_btn">Run Forge</button>
+          <div class="small">Stores Strategy Forge runs in the research database. Exports stay paper-only unless explicitly changed later.</div>
+        </div>
+        <input type="hidden" id="if_forge_nonce" name="_nonce" value="" />
+        <div id="if_forge_table"
+             hx-get="/partials/strategy_forge_quick"
+             hx-include="#if_preview_symbols, #if_preview_timeframe, #if_preview_broker_hint, #if_preview_include_extended, #if_forge_trials, #if_forge_min_trades, #if_forge_nonce"
+             hx-trigger="strategy-forge-run"
+             hx-swap="innerHTML"><div class="small">Ready.</div></div>
+      </div>
+      <div class="card" style="grid-column: span 12;">
+        <h3 style="margin:0 0 8px 0;">Execution Settings</h3>
+        <div class="small">Order placement controls for this cryptid.</div>
+
+        <!-- Basic Timing & Position Sizing -->
+        <div style="margin-top:16px;">
+          <h4 style="margin:0 0 8px 0; font-size:0.95em; color:#666;">Timing & Position Sizing</h4>
+          <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px;">
+            <div><label>Sleep Duration (seconds)</label><input id="if_exec_sleep" type="number" step="1" /></div>
+            <div><label>${orderSizeLabel}</label><input id="if_exec_order_size" type="number" step="${orderSizeStep}" /></div>
+          </div>
+        </div>
+
+        <!-- Order Types & Trailing Stops -->
+        <div style="margin-top:16px;">
+          <h4 style="margin:0 0 8px 0; font-size:0.95em; color:#666;">Order Types & Trailing Stops</h4>
+          <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px;">
+            ${buyOrderTypeInput ? "<div><label>BUY Order Type</label><select id='if_exec_buy_order_type'>" + orderTypeOptionHtml + "</select></div>" : ""}
+            ${sellOrderTypeInput ? "<div><label>SELL Order Type</label><select id='if_exec_sell_order_type'>" + orderTypeOptionHtml + "</select></div>" : ""}
+            <div><label>Trailing Stop Mode</label><select id="if_exec_trail_mode"><option value="fixed">Fixed $ Amount</option><option value="atr">ATR Multiple</option></select></div>
+            <div id="if_exec_trail_amount_wrap"><label>Trailing Stop Amount ($)</label><input id="if_exec_trail_amount" type="number" step="0.01" /></div>
+            <div id="if_exec_trail_mult_wrap"><label>ATR Multiplier</label><input id="if_exec_trail_mult" type="number" step="0.1" /></div>
+          </div>
+        </div>
+
+        <!-- Stop-Loss Configuration -->
+        <div style="margin-top:16px;">
+          <h4 style="margin:0 0 8px 0; font-size:0.95em; color:#666;">Stop-Loss Configuration</h4>
+          <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px;">
+            <div><label><input id="if_exec_stoploss_enabled" type="checkbox" /> Enable Stop-Loss Logic</label></div>
+            <div><label>Stop-Loss Arming %</label><input id="if_exec_target_gain" type="number" step="0.01" /></div>
+            <div><label>Stop-Loss Trigger %</label><input id="if_exec_stop_loss" type="number" step="0.01" /></div>
+          </div>
+        </div>
+
+        <!-- Trading Hours & Sessions -->
+        ${includeExtendedHoursDataInput || allowExtendedHoursInput || showOvernightInput ? `
+        <div style="margin-top:16px;">
+          <h4 style="margin:0 0 8px 0; font-size:0.95em; color:#666;">Trading Hours & Sessions</h4>
+          <div class="grid" style="grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px;">
+            ${includeExtendedHoursDataInput ? `<div><label><input id='if_exec_include_extended_data' type='checkbox' /> Include Extended Hours Candles In Indicator Data</label></div>` : ""}
+            ${allowExtendedHoursInput ? `<div><label><input id='if_exec_allow_extended_orders' type='checkbox' /> ${extendedOrdersLabel}</label></div>` : ""}
+            ${showOvernightInput ? `<div><label><input id='if_exec_allow_overnight' type='checkbox' /> ${overnightLabel}</label></div>` : ""}
+          </div>
+        </div>
+        ` : ""}
+
+        <!-- Risk Management & Constraints -->
+        ${capRuleEnabledInput ? `
+        <div style="margin-top:16px;">
+          <h4 style="margin:0 0 8px 0; font-size:0.95em; color:#666;">Risk Management & Constraints</h4>
+          <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px;">
+            ${capRuleEnabledInput ? "<div><label><input id='if_exec_cap_enabled' type='checkbox' /> Enable Portfolio Cap Rule</label><div class='small'>Blocks BUY when current value of one symbol is already above its cap.</div></div>" : ""}
+            ${capModeInput ? "<div id='if_exec_cap_mode_wrap'><label>Portfolio Cap Mode</label><select id='if_exec_cap_mode'><option value='divisor_cash_slice'>Divisor + Cash Slice</option><option value='percent'>Per-Ticker % Cap</option></select></div>" : ""}
+            ${capPercentInput ? "<div id='if_exec_cap_percent_wrap'><label>Per-Ticker Caps</label><div id='if_exec_cap_percent_rows'></div><div class='small'>Populate from the current ticker list. Each ticker can have a different maximum portfolio weight.</div></div>" : ""}
+            ${capCashInput ? "<div id='if_exec_cash_percent_wrap'><label>Cash Position %</label><input id='if_exec_cash_percent' type='number' min='0' max='100' step='0.01' /><div class='small'>Blocks BUY orders when the projected cash allocation would fall below this percentage.</div></div>" : ""}
+            ${capCashSourceInput ? "<div id='if_exec_cash_source_wrap'><label>Cash Position Source</label><select id='if_exec_cash_source'><option value='buying_power'>Buying Power</option><option value='cash'>Cash Position</option></select><div class='small'>Choose whether the Cash Position % target checks buying power or current cash.</div></div>" : ""}
+            ${capDivisorInput ? "<div id='if_exec_cap_divisor_wrap'><label>Portfolio Cap Divisor</label><input id='if_exec_cap_divisor' type='number' min='2' step='1' /><div id='if_exec_cap_math' class='small'></div><div class='small'>Cap formula: ticker buys must stay below their cap and keep cash at or above the Cash Position % target.</div><div class='small'>Example: divisor 5 means each ticker slice is 20%. Cash Position % controls the separate cash reserve.</div></div>" : ""}
+          </div>
+        </div>
+        ` : ""}
+      </div>
+    `;
+    paramFields.appendChild(b);
+
+    function syncTimeframeOptions() {
+      const ctrl = b.querySelector("#if_exec_timeframe");
+      if (!ctrl) return;
+      const prev = String(ctrl.value || "");
+      ctrl.innerHTML = "";
+      const fallback = ["5m", "10m", "30m", "1h", "1d"];
+      const source = timeframeInput && timeframeInput.options && timeframeInput.options.length
+        ? Array.from(timeframeInput.options).map((o) => ({ value: String(o.value || ""), label: String(o.textContent || o.value || "") }))
+        : fallback.map((v) => ({ value: v, label: v }));
+      source.forEach((opt) => {
+        if (!opt.value) return;
+        const el = document.createElement("option");
+        el.value = opt.value;
+        el.textContent = opt.label || opt.value;
+        ctrl.appendChild(el);
+      });
+      if (timeframeInput && timeframeInput.value) ctrl.value = String(timeframeInput.value);
+      else if (prev) ctrl.value = prev;
+      if (!ctrl.value && ctrl.options.length) ctrl.value = ctrl.options[0].value;
+      if (timeframeInput && !timeframeInput.value && ctrl.value) timeframeInput.value = ctrl.value;
+    }
+    syncTimeframeOptions();
+
+    function syncTextarea() {
+      textarea.value = JSON.stringify(indicatorForgeRules);
+      updateParams();
+    }
+
+    let ifBacktestRefreshTimer = null;
+    function setBacktestRefreshBusy(isBusy) {
+      const btn = b.querySelector("#if_backtest_refresh_btn");
+      if (!btn) return;
+      btn.disabled = Boolean(isBusy);
+      btn.textContent = isBusy ? "Calculating..." : "Refresh Calculations";
+    }
+
+    function triggerBacktestRefreshNow() {
+      const backtestHost = b.querySelector("#if_backtest_table");
+      if (!backtestHost || !window.htmx) return;
+      const nonce = b.querySelector("#if_backtest_nonce");
+      if (nonce) nonce.value = String(Date.now());
+      window.htmx.trigger(backtestHost, "indicatorforge-backtest-refresh");
+    }
+
+    function setForgeBusy(isBusy) {
+      const btn = b.querySelector("#if_forge_run_btn");
+      if (!btn) return;
+      btn.disabled = Boolean(isBusy);
+      btn.textContent = isBusy ? "Forging..." : "Run Forge";
+    }
+
+    function triggerForgeRunNow() {
+      refreshPreviewInputsOnly();
+      const forgeHost = b.querySelector("#if_forge_table");
+      if (!forgeHost || !window.htmx) return;
+      const nonce = b.querySelector("#if_forge_nonce");
+      if (nonce) nonce.value = String(Date.now());
+      window.htmx.trigger(forgeHost, "strategy-forge-run");
+    }
+
+    function scheduleBacktestRefresh(delayMs = 450) {
+      if (ifBacktestRefreshTimer !== null) {
+        window.clearTimeout(ifBacktestRefreshTimer);
+      }
+      ifBacktestRefreshTimer = window.setTimeout(() => {
+        ifBacktestRefreshTimer = null;
+        triggerBacktestRefreshNow();
+      }, Math.max(0, Number(delayMs) || 0));
+    }
+
+    function refreshPreviewInputsOnly() {
+      const ps = b.querySelector("#if_preview_symbols");
+      const pt = b.querySelector("#if_preview_timeframe");
+      const pr = b.querySelector("#if_preview_rules_json");
+      const pb = b.querySelector("#if_preview_broker_hint");
+      const pe = b.querySelector("#if_preview_include_extended");
+      const pem = b.querySelector("#if_preview_entangled_mode");
+      const pps = b.querySelector("#if_preview_primary_symbol");
+      const pis = b.querySelector("#if_preview_inverse_symbol");
+      const bsl = b.querySelector("#if_backtest_stoploss_enabled");
+      const bag = b.querySelector("#if_backtest_target_gain_pct");
+      const bsp = b.querySelector("#if_backtest_stop_loss_pct");
+      if (ps) {
+        if (isEntangledTickers && primarySymbolInput) ps.value = String(primarySymbolInput.value || "");
+        else if (symbolsInput) ps.value = String(symbolsInput.value || "");
+      }
+      if (pt && timeframeInput) {
+        const tfCtrl = b.querySelector("#if_exec_timeframe");
+        const fallback = (tfCtrl && tfCtrl.options.length) ? tfCtrl.options[0].value : "1h";
+        pt.value = String(timeframeInput.value || fallback);
+      }
+      if (pr) pr.value = JSON.stringify(indicatorForgeRules);
+      if (pb) {
+        const curDef = BASE_ALGO_DEFS[String(baseSelect.value)] || {};
+        const p = String((curDef && curDef.path) || "").toLowerCase();
+        if (p.endsWith("scripts/indicatorforge.crypto.robinhood.py")) {
+          pb.value = "robinhood_crypto";
+        } else {
+          pb.value = (
+            p.endsWith("scripts/indicatorforge.schwab.py")
+            || p.endsWith("scripts/entangledtickers.schwab.py")
+          ) ? "schwab" : "robinhood";
+        }
+      }
+      if (pe) pe.value = (pb && pb.value === "robinhood_crypto") ? "true" : ((includeExtendedHoursDataInput && includeExtendedHoursDataInput.checked) ? "true" : "false");
+      if (pem) pem.value = isEntangledTickers ? "true" : "false";
+      if (pps) pps.value = (isEntangledTickers && primarySymbolInput) ? String(primarySymbolInput.value || "") : "";
+      if (pis) pis.value = (isEntangledTickers && inverseSymbolInput) ? String(inverseSymbolInput.value || "") : "";
+      if (bsl) bsl.value = (stoplossEnabledInput && stoplossEnabledInput.checked) ? "true" : "false";
+      if (bag) bag.value = targetGainInput ? String(targetGainInput.value || "") : "";
+      if (bsp) bsp.value = stopLossPctInput ? String(stopLossPctInput.value || "") : "";
+    }
+
+    function refreshPreview() {
+      refreshPreviewInputsOnly();
+      const host = b.querySelector("#if_preview_table");
+      if (host && window.htmx) window.htmx.trigger(host, "load");
+      triggerBacktestRefreshNow();
+    }
+
+    function asNumber(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function getMultiSelectValues(sel) {
+      if (!sel) return [];
+      return Array.from(sel.selectedOptions || [])
+        .map((opt) => String(opt.value || "").trim().toLowerCase())
+        .filter(Boolean);
+    }
+
+    function normalizeIchiConditionValue(value) {
+      const v = String(value || "").trim().toLowerCase();
+      const aliases = {
+        leading_span_a_above_leading_span_b: "cloud_bullish",
+        leading_span_a_below_leading_span_b: "cloud_bearish",
+        leading_a_above_leading_b: "cloud_bullish",
+        leading_a_below_leading_b: "cloud_bearish",
+        conversion_line_crosses_above_base_line: "tenkan_cross_above",
+        conversion_line_crosses_below_base_line: "tenkan_cross_below",
+        conversion_line_cross_above_base_line: "tenkan_cross_above",
+        conversion_line_cross_below_base_line: "tenkan_cross_below",
+        conversion_line_above_base_line: "tenkan_above_kijun",
+        conversion_line_below_base_line: "tenkan_below_kijun",
+        lagging_line_above: "chikou_above_price",
+        lagging_line_below: "chikou_below_price",
+        lagging_line_above_price: "chikou_above_price",
+        lagging_line_below_price: "chikou_below_price"
+      };
+      return aliases[v] || v;
+    }
+
+    function englishIchiConditionValue(value) {
+      const v = normalizeIchiConditionValue(value);
+      const map = {
+        cloud_bullish: "leading_span_a_above_leading_span_b",
+        cloud_bearish: "leading_span_a_below_leading_span_b",
+        tenkan_above_kijun: "conversion_line_above_base_line",
+        tenkan_below_kijun: "conversion_line_below_base_line",
+        tenkan_cross_above: "conversion_line_cross_above_base_line",
+        tenkan_cross_below: "conversion_line_cross_below_base_line",
+        chikou_above_price: "lagging_line_above_price",
+        chikou_below_price: "lagging_line_below_price",
+        price_above_tenkan_kijun_below_cloud: "price_above_conversion_base_below_cloud",
+        price_above_tenkan_kijun_inside_cloud: "price_above_conversion_base_inside_cloud",
+        price_below_tenkan_kijun_above_cloud: "price_below_conversion_base_above_cloud",
+        price_below_tenkan_kijun_inside_cloud: "price_below_conversion_base_inside_cloud",
+        price_stretched_above_kijun: "price_stretched_above_base_line",
+        price_stretched_below_kijun: "price_stretched_below_base_line",
+        kijun_flat: "base_line_flat",
+        kijun_rising: "base_line_rising",
+        kijun_falling: "base_line_falling",
+        tenkan_accelerating_up: "conversion_line_accelerating_up",
+        tenkan_accelerating_down: "conversion_line_accelerating_down",
+        chikou_clears_past_cloud_bullish: "lagging_line_clears_past_cloud_bullish",
+        chikou_clears_past_cloud_bearish: "lagging_line_clears_past_cloud_bearish",
+        chikou_blocked_by_past_price: "lagging_line_blocked_by_past_price",
+        chikou_in_congestion_zone: "lagging_line_in_congestion_zone",
+        kijun_bounce_bullish: "base_line_bounce_bullish",
+        kijun_reject_bearish: "base_line_reject_bearish",
+        weak_cross_inside_cloud: "conversion_base_cross_inside_cloud"
+      };
+      return map[v] || v;
+    }
+
+    function englishIchiConditionList(values) {
+      return normalizeIchiConditionList(values, "hold").map((value) => englishIchiConditionValue(value));
+    }
+
+    function normalizeIchiConditionList(raw, fallback = "hold") {
+      let items = [];
+      if (Array.isArray(raw)) {
+        items = raw;
+      } else if (typeof raw === "string") {
+        const txt = String(raw || "").trim();
+        if (txt.includes(",")) items = txt.split(",");
+        else if (txt) items = [txt];
+      } else if (raw !== undefined && raw !== null) {
+        items = [raw];
+      }
+      const out = [];
+      const seen = new Set();
+      items.forEach((item) => {
+        const v = normalizeIchiConditionValue(item);
+        if (!v || seen.has(v)) return;
+        seen.add(v);
+        out.push(v);
+      });
+      if (!out.length) out.push(String(fallback || "hold").trim().toLowerCase() || "hold");
+      let normalized = out;
+      if (normalized.length > 1) normalized = normalized.filter((v) => v !== "hold");
+      if (!normalized.length) normalized = ["hold"];
+      return normalized;
+    }
+
+    function setMultiSelectValues(sel, values, fallback = "hold") {
+      if (!sel) return;
+      const target = new Set(normalizeIchiConditionList(values, fallback));
+      let picked = 0;
+      Array.from(sel.options || []).forEach((opt) => {
+        const v = String(opt.value || "").trim().toLowerCase();
+        const on = target.has(v);
+        opt.selected = on;
+        if (on) picked += 1;
+      });
+      if (picked > 0) return;
+      const holdOpt = Array.from(sel.options || []).find((opt) => String(opt.value || "").trim().toLowerCase() === "hold");
+      if (holdOpt) holdOpt.selected = true;
+      else if (sel.options.length) sel.options[0].selected = true;
+    }
+
+    function formatIchiConditionSet(raw) {
+      const conds = normalizeIchiConditionList(raw, "hold").filter((c) => c !== "hold");
+      if (!conds.length) return "hold";
+      return conds.map((c) => ichiCondTxt(c)).join(" + ");
+    }
+
+    function normalizeIchiMatchMode(value, fallback = "all") {
+      const raw = String(value || fallback || "all").trim().toLowerCase();
+      return raw === "any" ? "any" : "all";
+    }
+
+    const ICHI_PRESET_SETS = {
+      institutional_trend_rider: {
+        label: "Institutional Trend Rider",
+        intent: "Capture strong expanding trends only and avoid transitional cloud states.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: [
+          "full_bullish_stack",
+          "cloud_breakout_bullish",
+          "chikou_clears_past_cloud_bullish",
+          "kijun_rising",
+          "strong_long_confirm"
+        ],
+        sell_conditions: [
+          "full_bearish_stack",
+          "cloud_breakout_bearish",
+          "chikou_clears_past_cloud_bearish",
+          "kijun_falling",
+          "strong_short_confirm"
+        ],
+        block_conditions: ["price_inside_cloud", "cloud_thickness_below"]
+      },
+      breakout_retest: {
+        label: "Breakout -> Retest",
+        intent: "Enter only after breakout acceptance and retest confirmation.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: [
+          "cloud_breakout_bullish",
+          "bullish_breakout_retest_hold",
+          "cloud_exit_up_with_momentum",
+          "tenkan_above_kijun"
+        ],
+        sell_conditions: [
+          "cloud_breakout_bearish",
+          "bearish_breakdown_retest_fail",
+          "cloud_exit_down_with_momentum",
+          "tenkan_below_kijun"
+        ],
+        block_conditions: ["weak_cross_inside_cloud", "deep_inside_cloud"]
+      },
+      early_trend_capture: {
+        label: "Early Trend Capture",
+        intent: "Position during regime transition before full breakout confirmation.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: [
+          "future_twist_bullish",
+          "approaching_future_twist_bullish",
+          "tenkan_cross_above",
+          "delayed_bullish_cross_valid",
+          "cloud_exit_up_with_momentum"
+        ],
+        sell_conditions: [
+          "future_twist_bearish",
+          "approaching_future_twist_bearish",
+          "tenkan_cross_below",
+          "delayed_bearish_cross_valid",
+          "cloud_exit_down_with_momentum"
+        ],
+        block_conditions: ["deep_inside_cloud", "chikou_in_congestion_zone"]
+      },
+      trend_pullback_kijun: {
+        label: "Trend Pullback (Base Line Reversion)",
+        intent: "Trade pullbacks back into trend equilibrium around Base Line.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: [
+          "kijun_bounce_bullish",
+          "price_stretched_below_kijun",
+          "tenkan_above_kijun",
+          "partial_bullish_stack",
+          "cloud_rejection_bullish"
+        ],
+        sell_conditions: [
+          "kijun_reject_bearish",
+          "price_stretched_above_kijun",
+          "tenkan_below_kijun",
+          "partial_bearish_stack",
+          "cloud_rejection_bearish"
+        ],
+        block_conditions: ["price_inside_cloud", "cloud_contracting"]
+      },
+      exhaustion_reversal: {
+        label: "Exhaustion / Blow-Off Reversal",
+        intent: "Catch snapback reversals after extreme cloud/Base Line extension.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: [
+          "price_extended_below_cloud",
+          "price_stretched_below_kijun",
+          "cloud_thickness_above",
+          "chikou_blocked_by_past_price",
+          "cloud_rejection_bullish",
+          "bullish_to_neutral_transition"
+        ],
+        sell_conditions: [
+          "price_extended_above_cloud",
+          "price_stretched_above_kijun",
+          "cloud_thickness_above",
+          "chikou_blocked_by_past_price",
+          "cloud_rejection_bearish",
+          "bearish_to_neutral_transition"
+        ],
+        block_conditions: ["hold"]
+      },
+      chop_filter: {
+        label: "Chop Filter (Global Block)",
+        intent: "Block trades during low-quality congestion/chop environments.",
+        buy_mode: "all",
+        sell_mode: "all",
+        block_mode: "any",
+        buy_conditions: ["hold"],
+        sell_conditions: ["hold"],
+        block_conditions: [
+          "price_inside_cloud",
+          "deep_inside_cloud",
+          "cloud_thickness_below",
+          "weak_cross_inside_cloud",
+          "chikou_in_congestion_zone",
+          "cloud_contracting"
+        ]
+      },
+      trend_weakening_exit: {
+        label: "Trend Weakening / Exit Logic",
+        intent: "Exit when structure weakens rather than waiting for full trend collapse.",
+        buy_mode: "any",
+        sell_mode: "any",
+        block_mode: "all",
+        buy_conditions: [
+          "bullish_stack_weakening",
+          "bullish_to_neutral_transition",
+          "tenkan_cross_above",
+          "cloud_rejection_bullish",
+          "price_above_tenkan_kijun_inside_cloud"
+        ],
+        sell_conditions: [
+          "bearish_stack_weakening",
+          "bearish_to_neutral_transition",
+          "tenkan_cross_below",
+          "cloud_rejection_bearish",
+          "price_below_tenkan_kijun_inside_cloud"
+        ],
+        block_conditions: ["hold"]
+      }
+    };
+
+    function syncIchiPresetDescription() {
+      const sel = b.querySelector("#if_ichi_preset");
+      const host = b.querySelector("#if_ichi_preset_desc");
+      if (!sel || !host) return;
+      const key = String(sel.value || "").trim();
+      const preset = key ? ICHI_PRESET_SETS[key] : null;
+      if (!preset) {
+        host.textContent = "";
+        return;
+      }
+      const buyMode = normalizeIchiMatchMode(preset.buy_mode, "all").toUpperCase();
+      const sellMode = normalizeIchiMatchMode(preset.sell_mode, "all").toUpperCase();
+      const blockMode = normalizeIchiMatchMode(preset.block_mode, "all").toUpperCase();
+      host.textContent = `${preset.label}: ${preset.intent} Modes -> BUY ${buyMode}, SELL ${sellMode}, BLOCK ${blockMode}.`;
+    }
+
+    function applyIchiPreset(key) {
+      const preset = ICHI_PRESET_SETS[String(key || "").trim()];
+      if (!preset) return;
+      const buySel = b.querySelector("#if_ichi_buy_cond");
+      const sellSel = b.querySelector("#if_ichi_sell_cond");
+      const blockSel = b.querySelector("#if_ichi_block_cond");
+      const buyModeSel = b.querySelector("#if_ichi_buy_mode");
+      const sellModeSel = b.querySelector("#if_ichi_sell_mode");
+      const blockModeSel = b.querySelector("#if_ichi_block_mode");
+      if (!buySel || !sellSel || !blockSel) return;
+      setMultiSelectValues(buySel, preset.buy_conditions || ["hold"], "hold");
+      setMultiSelectValues(sellSel, preset.sell_conditions || ["hold"], "hold");
+      if (buyModeSel) buyModeSel.value = normalizeIchiMatchMode(preset.buy_mode, "all");
+      if (sellModeSel) sellModeSel.value = normalizeIchiMatchMode(preset.sell_mode, "all");
+      if (blockModeSel) blockModeSel.value = normalizeIchiMatchMode(preset.block_mode, "all");
+      syncIchiBlockOptions();
+      setMultiSelectValues(blockSel, preset.block_conditions || ["hold"], "hold");
+      syncIchiPresetDescription();
+      syncIchiSummary();
+      refreshPreview();
+    }
+
+    function wireCollapsibleIchiMultiSelect(selector) {
+      const sel = b.querySelector(selector);
+      if (!sel) return;
+      const expanded = Math.max(2, parseInt(String(sel.dataset.expandedSize || "10"), 10) || 10);
+      const collapse = () => { sel.size = 1; };
+      const expand = () => { sel.size = expanded; };
+      collapse();
+      sel.addEventListener("focus", expand);
+      sel.addEventListener("mousedown", expand);
+      sel.addEventListener("touchstart", expand, { passive: true });
+      sel.addEventListener("blur", () => {
+        window.setTimeout(() => {
+          if (document.activeElement !== sel) collapse();
+        }, 60);
+      });
+      sel.addEventListener("keydown", (ev) => {
+        const k = String(ev.key || "");
+        if (k === "Escape") {
+          sel.blur();
+          collapse();
+          return;
+        }
+        if (k === "Enter" || k === " " || k === "ArrowDown" || k === "ArrowUp") {
+          expand();
+        }
+      });
+    }
+
+    function fmtRuleNum(v, digits = 4) {
+      const n = asNumber(v);
+      if (n === null) return "—";
+      const txt = n.toFixed(digits);
+      return txt.replace(/\.?0+$/, "");
+    }
+
+    function relTxt(rel) {
+      const r = String(rel || "hold").trim().toLowerCase();
+      if (r === "above") return "price above";
+      if (r === "below") return "price below";
+      return "hold";
+    }
+
+    function bbCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        touch_upper: "touch upper band",
+        touch_lower: "touch lower band",
+        close_outside_upper: "close outside upper band",
+        close_outside_lower: "close outside lower band",
+        reenter_from_above: "re-enter from above",
+        reenter_from_below: "re-enter from below",
+        width_increasing: "width increasing",
+        width_decreasing: "width decreasing",
+        width_below_threshold: "width below threshold (squeeze)",
+        width_expanding_from_squeeze: "width expanding from squeeze",
+        above_middle: "price above middle",
+        below_middle: "price below middle",
+        percent_b_above: "%B above threshold",
+        percent_b_below: "%B below threshold"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function ichiCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        price_above_cloud: "price above live cloud",
+        price_below_cloud: "price below live cloud",
+        price_inside_cloud: "price inside live cloud",
+        cloud_bullish: "live cloud bullish (A > B)",
+        cloud_bearish: "live cloud bearish (A < B)",
+        cloud_thickness_above: "live cloud thickness above threshold",
+        cloud_thickness_below: "live cloud thickness below threshold",
+        tenkan_above_kijun: "Conversion Line above Base Line",
+        tenkan_below_kijun: "Conversion Line below Base Line",
+        tenkan_cross_above: "Conversion Line crosses above Base Line",
+        tenkan_cross_below: "Conversion Line crosses below Base Line",
+        chikou_above_price: "Lagging Line above price",
+        chikou_below_price: "Lagging Line below price",
+        strong_long_confirm: "stacked long confirmation",
+        strong_short_confirm: "stacked short confirmation",
+        future_twist_bullish: "future cloud twist bullish",
+        future_twist_bearish: "future cloud twist bearish",
+        approaching_future_twist_bullish: "approaching future bullish twist",
+        approaching_future_twist_bearish: "approaching future bearish twist",
+        delayed_bullish_cross_valid: "delayed bullish cross still valid",
+        delayed_bearish_cross_valid: "delayed bearish cross still valid",
+        bullish_cross_strong_above_cloud: "strong bullish cross (above live cloud)",
+        bullish_cross_medium_at_cloud: "medium bullish cross (at live cloud)",
+        bullish_cross_weak_below_cloud: "weak bullish cross (below live cloud)",
+        bearish_cross_strong_below_cloud: "strong bearish cross (below live cloud)",
+        bearish_cross_medium_at_cloud: "medium bearish cross (at live cloud)",
+        bearish_cross_weak_above_cloud: "weak bearish cross (above live cloud)",
+        cloud_breakout_bullish: "bullish live cloud breakout",
+        cloud_breakout_bearish: "bearish live cloud breakdown",
+        price_above_tenkan_kijun_below_cloud: "price > Conversion Line/Base Line, below past cloud",
+        price_above_tenkan_kijun_inside_cloud: "price > Conversion Line/Base Line, inside past cloud",
+        price_below_tenkan_kijun_above_cloud: "price < Conversion Line/Base Line, above past cloud",
+        price_below_tenkan_kijun_inside_cloud: "price < Conversion Line/Base Line, inside past cloud",
+        price_extended_above_cloud: "price extended far above live cloud",
+        price_extended_below_cloud: "price extended far below live cloud",
+        price_stretched_above_kijun: "price stretched above Base Line",
+        price_stretched_below_kijun: "price stretched below Base Line",
+        kijun_flat: "flat Base Line",
+        kijun_rising: "rising Base Line",
+        kijun_falling: "falling Base Line",
+        tenkan_accelerating_up: "Conversion Line slope accelerating up",
+        tenkan_accelerating_down: "Conversion Line slope accelerating down",
+        shallow_cloud_entry_from_above: "shallow live cloud entry from above",
+        shallow_cloud_entry_from_below: "shallow live cloud entry from below",
+        deep_inside_cloud: "deep inside live cloud",
+        cloud_exit_up_with_momentum: "live cloud exit up with momentum",
+        cloud_exit_down_with_momentum: "live cloud exit down with momentum",
+        bullish_breakout_retest_hold: "bullish breakout retest hold",
+        bearish_breakdown_retest_fail: "bearish breakdown retest fail",
+        chikou_clears_past_cloud_bullish: "Lagging Line clears past cloud bullish",
+        chikou_clears_past_cloud_bearish: "Lagging Line clears past cloud bearish",
+        chikou_blocked_by_past_price: "Lagging Line blocked by past price",
+        chikou_in_congestion_zone: "Lagging Line in congestion zone",
+        cloud_expanding: "live cloud expanding",
+        cloud_contracting: "live cloud contracting",
+        cloud_thin_to_thick: "live cloud thin to thick transition",
+        bullish_to_neutral_transition: "bullish to neutral transition",
+        bearish_to_neutral_transition: "bearish to neutral transition",
+        partial_bullish_stack: "partial bullish stack (2/3)",
+        partial_bearish_stack: "partial bearish stack (2/3)",
+        full_bullish_stack: "full bullish stack (3/3)",
+        full_bearish_stack: "full bearish stack (3/3)",
+        bullish_stack_weakening: "bullish stack weakening",
+        bearish_stack_weakening: "bearish stack weakening",
+        kijun_bounce_bullish: "bullish Base Line bounce",
+        kijun_reject_bearish: "bearish Base Line rejection",
+        weak_cross_inside_cloud: "weak cross inside live cloud",
+        cloud_rejection_bearish: "live cloud rejection bearish",
+        cloud_rejection_bullish: "live cloud rejection bullish"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function syncIchiBlockOptions() {
+      const buySel = b.querySelector("#if_ichi_buy_cond");
+      const sellSel = b.querySelector("#if_ichi_sell_cond");
+      const blockSel = b.querySelector("#if_ichi_block_cond");
+      if (!buySel || !sellSel || !blockSel) return;
+      const current = normalizeIchiConditionList(getMultiSelectValues(blockSel), "hold");
+      const seen = new Set();
+      blockSel.innerHTML = "";
+      const add = (value, label) => {
+        const v = String(value || "").trim().toLowerCase();
+        if (!v || seen.has(v)) return;
+        seen.add(v);
+        const opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = label;
+        blockSel.appendChild(opt);
+      };
+      add("hold", "BLOCK/HOLD: disabled");
+      [buySel, sellSel].forEach((sel) => {
+        Array.from(sel.options || []).forEach((opt) => {
+          const v = String(opt.value || "").trim().toLowerCase();
+          if (!v || v === "hold") return;
+          const txt = String(opt.textContent || v)
+            .replace(/^BUY:\s*/i, "")
+            .replace(/^SELL:\s*/i, "")
+            .trim();
+          add(v, `BLOCK/HOLD: ${txt}`);
+        });
+      });
+      setMultiSelectValues(blockSel, current, "hold");
+    }
+
+    function ttmCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        squeeze_on: "squeeze on (BB inside KC)",
+        squeeze_off: "squeeze off (BB outside KC)",
+        squeeze_fired: "squeeze fired (on -> off)",
+        momentum_above_zero: "momentum above zero",
+        momentum_below_zero: "momentum below zero",
+        momentum_increasing: "momentum increasing",
+        momentum_decreasing: "momentum decreasing",
+        momentum_cross_up: "momentum cross up",
+        momentum_cross_down: "momentum cross down",
+        long_trend: "long trend",
+        short_trend: "short trend",
+        long_release: "long release",
+        short_release: "short release"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function rocCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        roc_above_threshold: "ROC above threshold",
+        roc_below_threshold: "ROC below threshold",
+        roc_cross_up_zero: "ROC crosses above zero",
+        roc_cross_down_zero: "ROC crosses below zero",
+        roc_cross_up_threshold: "ROC crosses above threshold",
+        roc_cross_down_threshold: "ROC crosses below threshold",
+        roc_increasing: "ROC increasing",
+        roc_decreasing: "ROC decreasing",
+        roc_positive: "ROC positive",
+        roc_negative: "ROC negative",
+        momentum_long: "momentum long",
+        momentum_short: "momentum short"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function sarCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        price_above_sar: "price above SAR",
+        price_below_sar: "price below SAR",
+        sar_cross_up: "price crosses above SAR",
+        sar_cross_down: "price crosses below SAR",
+        sar_rising: "SAR rising",
+        sar_falling: "SAR falling",
+        trend_long: "trend long (price above SAR + rising SAR)",
+        trend_short: "trend short (price below SAR + falling SAR)"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function rocCondDesc(cond, side, buyThreshold, sellThreshold) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const threshold = side === "sell" ? sellThreshold : buyThreshold;
+      const thresholdTxt = `${fmtRuleNum(threshold === null ? 0 : threshold, 3)}%`;
+      if (c === "hold") return "No signal from this side.";
+      if (c === "roc_cross_up_zero") return "Triggers only when ROC crosses from <= 0% to > 0% on this bar.";
+      if (c === "roc_cross_down_zero") return "Triggers only when ROC crosses from >= 0% to < 0% on this bar.";
+      if (c === "roc_above_threshold") return `Triggers while ROC is at or above ${thresholdTxt}.`;
+      if (c === "roc_below_threshold") return `Triggers while ROC is at or below ${thresholdTxt}.`;
+      if (c === "roc_cross_up_threshold") return `Triggers only when ROC crosses from <= ${thresholdTxt} to > ${thresholdTxt}.`;
+      if (c === "roc_cross_down_threshold") return `Triggers only when ROC crosses from >= ${thresholdTxt} to < ${thresholdTxt}.`;
+      if (c === "roc_increasing") return "Triggers when current ROC is greater than previous ROC (momentum accelerating).";
+      if (c === "roc_decreasing") return "Triggers when current ROC is less than previous ROC (momentum weakening).";
+      if (c === "roc_positive") return "Triggers while ROC is above 0%.";
+      if (c === "roc_negative") return "Triggers while ROC is below 0%.";
+      if (c === "momentum_long") return "Triggers when ROC is above 0% and still rising versus the previous bar.";
+      if (c === "momentum_short") return "Triggers when ROC is below 0% and still falling versus the previous bar.";
+      return `Condition "${c}" is selected.`;
+    }
+
+    function sarCondDesc(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      if (c === "hold") return "No signal from this side.";
+      if (c === "price_above_sar") return "Triggers while close is above the current SAR value.";
+      if (c === "price_below_sar") return "Triggers while close is below the current SAR value.";
+      if (c === "sar_cross_up") return "Triggers only on bars where close moves from at/below SAR to above SAR.";
+      if (c === "sar_cross_down") return "Triggers only on bars where close moves from at/above SAR to below SAR.";
+      if (c === "sar_rising") return "Triggers when SAR is higher than the previous bar SAR.";
+      if (c === "sar_falling") return "Triggers when SAR is lower than the previous bar SAR.";
+      if (c === "trend_long") return "Triggers when close is above SAR and SAR slope is rising (bull trend continuation).";
+      if (c === "trend_short") return "Triggers when close is below SAR and SAR slope is falling (bear trend continuation).";
+      return `Condition "${c}" is selected.`;
+    }
+
+    function bbCondDesc(cond, side, squeezeThreshold, pbBuy, pbSell) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const squeezeTxt = `${fmtRuleNum(squeezeThreshold === null ? 5 : squeezeThreshold, 3)}%`;
+      const pbThreshold = side === "sell" ? pbSell : pbBuy;
+      const pbTxt = fmtRuleNum(pbThreshold === null ? (side === "sell" ? 0.8 : 0.2) : pbThreshold, 3);
+      if (c === "hold") return "No signal from this side.";
+      if (c === "touch_upper") return "Triggers when the bar high touches or breaks the upper band.";
+      if (c === "touch_lower") return "Triggers when the bar low touches or breaks the lower band.";
+      if (c === "close_outside_upper") return "Triggers when the close finishes above the upper band.";
+      if (c === "close_outside_lower") return "Triggers when the close finishes below the lower band.";
+      if (c === "reenter_from_above") return "Triggers when previous close was above the upper band and current close re-enters inside.";
+      if (c === "reenter_from_below") return "Triggers when previous close was below the lower band and current close re-enters inside.";
+      if (c === "width_increasing") return "Triggers when Bollinger band width % is expanding versus the previous bar.";
+      if (c === "width_decreasing") return "Triggers when Bollinger band width % is contracting versus the previous bar.";
+      if (c === "width_below_threshold") return `Triggers while band width % is <= ${squeezeTxt} (squeeze regime).`;
+      if (c === "width_expanding_from_squeeze") return `Triggers when width was <= ${squeezeTxt} and then expands (squeeze release).`;
+      if (c === "above_middle") return "Triggers when close is above the middle band.";
+      if (c === "below_middle") return "Triggers when close is below the middle band.";
+      if (c === "percent_b_above") return `Triggers while %B is >= ${pbTxt}.`;
+      if (c === "percent_b_below") return `Triggers while %B is <= ${pbTxt}.`;
+      return `Condition "${c}" is selected.`;
+    }
+
+    function ichiCondDesc(cond, thicknessThreshold, kijunTolerance, delayedLookback) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const thickTxt = `${fmtRuleNum(thicknessThreshold === null ? 1.0 : thicknessThreshold, 3)}%`;
+      const kijunTolTxt = `${fmtRuleNum(kijunTolerance === null ? 0.35 : kijunTolerance, 3)}%`;
+      const delayBars = Math.max(1, parseInt(String(delayedLookback == null ? 3 : delayedLookback), 10) || 3);
+      if (c === "hold") return "No signal from this side.";
+      if (c === "price_above_cloud") return "Triggers when close is above the live cloud top drawn from the displaced Leading Spans.";
+      if (c === "price_below_cloud") return "Triggers when close is below the live cloud bottom drawn from the displaced Leading Spans.";
+      if (c === "price_inside_cloud") return "Triggers when close is between the live cloud top and bottom drawn from the displaced Leading Spans.";
+      if (c === "cloud_bullish") return "Triggers when live-cloud Leading Span A is above live-cloud Leading Span B.";
+      if (c === "cloud_bearish") return "Triggers when live-cloud Leading Span A is below live-cloud Leading Span B.";
+      if (c === "cloud_thickness_above") return `Triggers when live cloud thickness is >= ${thickTxt}.`;
+      if (c === "cloud_thickness_below") return `Triggers when live cloud thickness is <= ${thickTxt}.`;
+      if (c === "tenkan_above_kijun") return "Triggers while Conversion Line line is above Base Line line.";
+      if (c === "tenkan_below_kijun") return "Triggers while Conversion Line line is below Base Line line.";
+      if (c === "tenkan_cross_above") return "Triggers on the bar Conversion Line crosses from <= Base Line to > Base Line.";
+      if (c === "tenkan_cross_below") return "Triggers on the bar Conversion Line crosses from >= Base Line to < Base Line.";
+      if (c === "chikou_above_price") return "Triggers when Lagging Line span is above displaced price.";
+      if (c === "chikou_below_price") return "Triggers when Lagging Line span is below displaced price.";
+      if (c === "strong_long_confirm") return "Triggers when price is above the live cloud, Conversion Line > Base Line, and Lagging Line confirms above price.";
+      if (c === "strong_short_confirm") return "Triggers when price is below the live cloud, Conversion Line < Base Line, and Lagging Line confirms below price.";
+      if (c === "future_twist_bullish") return "Triggers when projected Leading Span A crosses above Span B in the forward cloud.";
+      if (c === "future_twist_bearish") return "Triggers when projected Leading Span A crosses below Span B in the forward cloud.";
+      if (c === "approaching_future_twist_bullish") return "Triggers when the future cloud is still bearish but the A/B gap is shrinking toward a bullish twist.";
+      if (c === "approaching_future_twist_bearish") return "Triggers when the future cloud is still bullish but the A/B gap is shrinking toward a bearish twist.";
+      if (c === "delayed_bullish_cross_valid") return `Triggers when a bullish Conversion Line/Base Line cross occurred within the last ${delayBars} bars and bullish alignment is still valid.`;
+      if (c === "delayed_bearish_cross_valid") return `Triggers when a bearish Conversion Line/Base Line cross occurred within the last ${delayBars} bars and bearish alignment is still valid.`;
+      if (c === "bullish_cross_strong_above_cloud") return "Triggers only when a fresh bullish Conversion Line/Base Line cross occurs above the live cloud.";
+      if (c === "bullish_cross_medium_at_cloud") return "Triggers only when a fresh bullish cross occurs inside the live cloud or at the live cloud boundary.";
+      if (c === "bullish_cross_weak_below_cloud") return "Triggers only when a fresh bullish cross occurs below the live cloud (weak quality).";
+      if (c === "bearish_cross_strong_below_cloud") return "Triggers only when a fresh bearish Conversion Line/Base Line cross occurs below the live cloud.";
+      if (c === "bearish_cross_medium_at_cloud") return "Triggers only when a fresh bearish cross occurs inside the live cloud or at the live cloud boundary.";
+      if (c === "bearish_cross_weak_above_cloud") return "Triggers only when a fresh bearish cross occurs above the live cloud (weak quality).";
+      if (c === "cloud_breakout_bullish") return "Triggers when close moves from at/below prior live cloud top to above current live cloud.";
+      if (c === "cloud_breakout_bearish") return "Triggers when close moves from at/above prior live cloud bottom to below current live cloud.";
+      if (c === "price_above_tenkan_kijun_below_cloud") return "Triggers when close is above both Conversion Line and Base Line, but still below the displaced (past-drawn) cloud bottom.";
+      if (c === "price_above_tenkan_kijun_inside_cloud") return "Triggers when close is above both Conversion Line and Base Line and sits inside the displaced (past-drawn) cloud zone.";
+      if (c === "price_below_tenkan_kijun_above_cloud") return "Triggers when close is below both Conversion Line and Base Line, but still above the displaced (past-drawn) cloud top.";
+      if (c === "price_below_tenkan_kijun_inside_cloud") return "Triggers when close is below both Conversion Line and Base Line and sits inside the displaced (past-drawn) cloud zone.";
+      if (c === "price_extended_above_cloud") return `Triggers when price is far above live cloud top by at least ${thickTxt}.`;
+      if (c === "price_extended_below_cloud") return `Triggers when price is far below live cloud bottom by at least ${thickTxt}.`;
+      if (c === "price_stretched_above_kijun") return `Triggers when price is materially stretched above Base Line (derived from ${kijunTolTxt} tolerance).`;
+      if (c === "price_stretched_below_kijun") return `Triggers when price is materially stretched below Base Line (derived from ${kijunTolTxt} tolerance).`;
+      if (c === "kijun_flat") return `Triggers when Base Line changes minimally bar-to-bar (flat magnet zone within tolerance tied to ${kijunTolTxt}).`;
+      if (c === "kijun_rising") return "Triggers when Base Line is higher than the previous bar.";
+      if (c === "kijun_falling") return "Triggers when Base Line is lower than the previous bar.";
+      if (c === "tenkan_accelerating_up") return "Triggers when Conversion Line slope is positive and increasing versus prior slope.";
+      if (c === "tenkan_accelerating_down") return "Triggers when Conversion Line slope is negative and steepening versus prior slope.";
+      if (c === "shallow_cloud_entry_from_above") return "Triggers when price enters only the upper edge of the live cloud from above.";
+      if (c === "shallow_cloud_entry_from_below") return "Triggers when price enters only the lower edge of the live cloud from below.";
+      if (c === "deep_inside_cloud") return "Triggers when price is deep in the middle zone of the live cloud.";
+      if (c === "cloud_exit_up_with_momentum") return "Triggers when price exits the live cloud upward with positive bar momentum and bullish Conversion Line/Base Line alignment.";
+      if (c === "cloud_exit_down_with_momentum") return "Triggers when price exits the live cloud downward with negative bar momentum and bearish Conversion Line/Base Line alignment.";
+      if (c === "bullish_breakout_retest_hold") return "Triggers when an upside live cloud breakout retests live cloud top and holds.";
+      if (c === "bearish_breakdown_retest_fail") return "Triggers when a downside live cloud breakdown retests live cloud bottom and fails.";
+      if (c === "chikou_clears_past_cloud_bullish") return "Triggers when current price clears above the past cloud level used by Lagging Line context.";
+      if (c === "chikou_clears_past_cloud_bearish") return "Triggers when current price clears below the past cloud level used by Lagging Line context.";
+      if (c === "chikou_blocked_by_past_price") return "Triggers when current price is very close to displaced past price (Lagging Line blockage).";
+      if (c === "chikou_in_congestion_zone") return "Triggers when Lagging Line-style context is both blocked and inside past cloud structure (congestion).";
+      if (c === "cloud_expanding") return "Triggers when cloud thickness is increasing versus the previous bar.";
+      if (c === "cloud_contracting") return "Triggers when cloud thickness is decreasing versus the previous bar.";
+      if (c === "cloud_thin_to_thick") return `Triggers when cloud thickness transitions from <= ${thickTxt} to above that threshold.`;
+      if (c === "bullish_to_neutral_transition") return "Triggers when price moves from above cloud into the cloud (bullish regime weakening).";
+      if (c === "bearish_to_neutral_transition") return "Triggers when price moves from below cloud into the cloud (bearish regime weakening).";
+      if (c === "partial_bullish_stack") return "Triggers when at least 2 of 3 bullish layers align (price/cloud, Conversion Line/Base Line, Lagging Line).";
+      if (c === "partial_bearish_stack") return "Triggers when at least 2 of 3 bearish layers align (price/cloud, Conversion Line/Base Line, Lagging Line).";
+      if (c === "full_bullish_stack") return "Triggers when all 3 bullish layers align.";
+      if (c === "full_bearish_stack") return "Triggers when all 3 bearish layers align.";
+      if (c === "bullish_stack_weakening") return "Triggers when bullish stack depth drops versus previous bar.";
+      if (c === "bearish_stack_weakening") return "Triggers when bearish stack depth drops versus previous bar.";
+      if (c === "kijun_bounce_bullish") return `Triggers when bullish regime holds and close stays above Base Line within ${kijunTolTxt} tolerance.`;
+      if (c === "kijun_reject_bearish") return `Triggers when bearish regime holds and close stays below Base Line within ${kijunTolTxt} tolerance.`;
+      if (c === "weak_cross_inside_cloud") return "Triggers when Conversion Line/Base Line cross happens while price is inside the live cloud.";
+      if (c === "cloud_rejection_bearish") return "Triggers when price enters cloud from above (bearish rejection setup).";
+      if (c === "cloud_rejection_bullish") return "Triggers when price enters cloud from below (bullish rejection setup).";
+      return `Condition "${c}" is selected.`;
+    }
+
+    function ttmCondDesc(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      if (c === "hold") return "No signal from this side.";
+      if (c === "squeeze_on") return "Triggers while Bollinger bands are inside Keltner channels (compression).";
+      if (c === "squeeze_off") return "Triggers while Bollinger bands are outside Keltner channels (post-compression expansion).";
+      if (c === "squeeze_fired") return "Triggers on transition from squeeze on -> squeeze off (release bar).";
+      if (c === "momentum_above_zero") return "Triggers while TTM momentum is above zero.";
+      if (c === "momentum_below_zero") return "Triggers while TTM momentum is below zero.";
+      if (c === "momentum_increasing") return "Triggers when momentum is higher than previous bar.";
+      if (c === "momentum_decreasing") return "Triggers when momentum is lower than previous bar.";
+      if (c === "momentum_cross_up") return "Triggers when momentum crosses from <= 0 to > 0.";
+      if (c === "momentum_cross_down") return "Triggers when momentum crosses from >= 0 to < 0.";
+      if (c === "long_trend") return "Triggers when squeeze is off, momentum is positive, and still increasing.";
+      if (c === "short_trend") return "Triggers when squeeze is off, momentum is negative, and still decreasing.";
+      if (c === "long_release") return "Triggers when squeeze fires and momentum is positive.";
+      if (c === "short_release") return "Triggers when squeeze fires and momentum is negative.";
+      return `Condition "${c}" is selected.`;
+    }
+
+    function syncRocSummary() {
+      const host = b.querySelector("#if_roc_summary");
+      const buyCond = b.querySelector("#if_roc_buy_cond");
+      const sellCond = b.querySelector("#if_roc_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const buyThr = asNumber(b.querySelector("#if_roc_buy_thr")?.value);
+      const sellThr = asNumber(b.querySelector("#if_roc_sell_thr")?.value);
+      host.innerHTML = `<b>BUY:</b> ${rocCondDesc(buyCond.value, "buy", buyThr, sellThr)}<br><b>SELL:</b> ${rocCondDesc(sellCond.value, "sell", buyThr, sellThr)}`;
+    }
+
+    function syncSarSummary() {
+      const host = b.querySelector("#if_sar_summary");
+      const buyCond = b.querySelector("#if_sar_buy_cond");
+      const sellCond = b.querySelector("#if_sar_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const stepRaw = asNumber(b.querySelector("#if_sar_step")?.value);
+      const maxRaw = asNumber(b.querySelector("#if_sar_max")?.value);
+      const step = stepRaw === null ? 0.02 : Math.max(0.0001, stepRaw);
+      const maxStep = maxRaw === null ? 0.2 : Math.max(step, maxRaw);
+      host.innerHTML =
+        `<b>BUY:</b> ${sarCondDesc(buyCond.value)}<br>` +
+        `<b>SELL:</b> ${sarCondDesc(sellCond.value)}<br>` +
+        `Settings: step ${fmtRuleNum(step, 4)}, max ${fmtRuleNum(maxStep, 4)}.`;
+    }
+
+    function syncBbSummary() {
+      const host = b.querySelector("#if_bb_summary");
+      const buyCond = b.querySelector("#if_bb_buy_cond");
+      const sellCond = b.querySelector("#if_bb_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const squeeze = asNumber(b.querySelector("#if_bb_squeeze")?.value);
+      const pbBuy = asNumber(b.querySelector("#if_bb_pctb_buy")?.value);
+      const pbSell = asNumber(b.querySelector("#if_bb_pctb_sell")?.value);
+      host.innerHTML =
+        `<b>BUY:</b> ${bbCondDesc(buyCond.value, "buy", squeeze, pbBuy, pbSell)}<br>` +
+        `<b>SELL:</b> ${bbCondDesc(sellCond.value, "sell", squeeze, pbBuy, pbSell)}`;
+    }
+
+    function syncIchiSummary() {
+      syncIchiBlockOptions();
+      const host = b.querySelector("#if_ichi_summary");
+      const buyCond = b.querySelector("#if_ichi_buy_cond");
+      const sellCond = b.querySelector("#if_ichi_sell_cond");
+      const blockCond = b.querySelector("#if_ichi_block_cond");
+      if (!host || !buyCond || !sellCond || !blockCond) return;
+      const tenkan = Math.max(1, parseInt(String(b.querySelector("#if_ichi_tenkan")?.value || "9"), 10) || 9);
+      const kijun = Math.max(1, parseInt(String(b.querySelector("#if_ichi_kijun")?.value || "26"), 10) || 26);
+      const senkouB = Math.max(2, parseInt(String(b.querySelector("#if_ichi_senkou_b")?.value || "52"), 10) || 52);
+      const displacement = Math.max(1, parseInt(String(b.querySelector("#if_ichi_displacement")?.value || "26"), 10) || 26);
+      const thickness = asNumber(b.querySelector("#if_ichi_thickness")?.value);
+      const kijunTol = asNumber(b.querySelector("#if_ichi_kijun_tol")?.value);
+      const delayed = Math.max(1, parseInt(String(b.querySelector("#if_ichi_delayed_lookback")?.value || "3"), 10) || 3);
+      const buyMode = normalizeIchiMatchMode(b.querySelector("#if_ichi_buy_mode")?.value, "all");
+      const sellMode = normalizeIchiMatchMode(b.querySelector("#if_ichi_sell_mode")?.value, "all");
+      const blockMode = normalizeIchiMatchMode(b.querySelector("#if_ichi_block_mode")?.value, "all");
+      const buyConds = normalizeIchiConditionList(getMultiSelectValues(buyCond), "hold");
+      const sellConds = normalizeIchiConditionList(getMultiSelectValues(sellCond), "hold");
+      const blockConds = normalizeIchiConditionList(getMultiSelectValues(blockCond), "hold");
+      setMultiSelectValues(buyCond, buyConds, "hold");
+      setMultiSelectValues(sellCond, sellConds, "hold");
+      const buyActive = buyConds.filter((c) => c !== "hold");
+      const sellActive = sellConds.filter((c) => c !== "hold");
+      const blockActive = blockConds.filter((c) => c !== "hold");
+      const buyJoin = buyMode === "any" ? " OR " : " AND ";
+      const sellJoin = sellMode === "any" ? " OR " : " AND ";
+      const blockJoin = blockMode === "any" ? " OR " : " AND ";
+      const buyTxt = buyActive.length
+        ? `${buyMode === "any" ? "Any selected BUY condition can trigger" : "All selected BUY conditions must be true"}: ${buyActive.map((c) => ichiCondDesc(c, thickness, kijunTol, delayed)).join(buyJoin)}`
+        : "No signal from this side.";
+      const sellTxt = sellActive.length
+        ? `${sellMode === "any" ? "Any selected SELL condition can trigger" : "All selected SELL conditions must be true"}: ${sellActive.map((c) => ichiCondDesc(c, thickness, kijunTol, delayed)).join(sellJoin)}`
+        : "No signal from this side.";
+      const blockTxt = blockActive.length
+        ? `Blocks BUY/SELL when ${blockMode === "any" ? "any selected blocker condition is true" : "all selected blocker conditions are true"}: ${blockActive.map((c) => ichiCondDesc(c, thickness, kijunTol, delayed)).join(blockJoin)}`
+        : "Disabled. No extra blocker is applied.";
+      host.innerHTML =
+        `<b>BUY:</b> ${buyTxt}<br>` +
+        `<b>SELL:</b> ${sellTxt}<br>` +
+        `<b>BLOCK/HOLD:</b> ${blockTxt}<br>` +
+        `Settings: Conversion Line/Base Line/LeadingB = ${tenkan}/${kijun}/${senkouB}, displacement ${displacement}, delayed cross lookback ${delayed} bars. Modes: BUY ${buyMode.toUpperCase()}, SELL ${sellMode.toUpperCase()}, BLOCK ${blockMode.toUpperCase()}.`;
+    }
+
+    function syncTtmSummary() {
+      const host = b.querySelector("#if_ttm_summary");
+      const buyCond = b.querySelector("#if_ttm_buy_cond");
+      const sellCond = b.querySelector("#if_ttm_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const bbLen = Math.max(2, parseInt(String(b.querySelector("#if_ttm_bb_len")?.value || "20"), 10) || 20);
+      const bbMult = Math.max(0.1, asNumber(b.querySelector("#if_ttm_bb_mult")?.value) ?? 2.0);
+      const kcLen = Math.max(2, parseInt(String(b.querySelector("#if_ttm_kc_len")?.value || "20"), 10) || 20);
+      const kcMult = Math.max(0.1, asNumber(b.querySelector("#if_ttm_kc_mult")?.value) ?? 1.5);
+      const momLen = Math.max(2, parseInt(String(b.querySelector("#if_ttm_mom_len")?.value || "20"), 10) || 20);
+      host.innerHTML =
+        `<b>BUY:</b> ${ttmCondDesc(buyCond.value)}<br>` +
+        `<b>SELL:</b> ${ttmCondDesc(sellCond.value)}<br>` +
+        `Settings: BB ${bbLen}/${fmtRuleNum(bbMult, 2)}, KC ${kcLen}/${fmtRuleNum(kcMult, 2)}, momentum length ${momLen}.`;
+    }
+
+    function scopeTxt(scope) {
+      const s = String(scope || "both").trim().toLowerCase();
+      if (s === "buy") return "BUY only";
+      if (s === "sell") return "SELL only";
+      return "BUY and SELL";
+    }
+
+    function dualSignalScope(raw) {
+      const s = String(raw || "both").trim().toLowerCase();
+      if (s === "buy" || s === "sell") return s;
+      return "both";
+    }
+
+    function targetLabelList(raw) {
+      const ids = Array.isArray(raw) ? raw : [];
+      const entries = indicatorForgeRuleTargetEntries();
+      const byId = new Map(entries.map((entry) => [String(entry.id || ""), String(entry.summary || entry.label || "")]));
+      const out = [];
+      ids.forEach((id) => {
+        const rid = String(id || "").trim();
+        if (!rid) return;
+        out.push(byId.get(rid) || rid);
+      });
+      return out.length ? out.join(", ") : "none selected";
+    }
+
+    function ruleSummaryLines(rule, idx) {
+      const r = rule && typeof rule === "object" ? rule : {};
+      const kind = String(r.kind || "").trim().toLowerCase();
+      const p = r.params && typeof r.params === "object" ? r.params : {};
+      const lines = [];
+
+      if (kind === "ma" || kind === "ema") {
+        if (normalizeMaMode(p.mode) === "ribbon") {
+          lines.push("MA Ribbon: BUY/SELL only when short, medium, and long all agree; otherwise HOLD.");
+          maRibbonLevelsFromParams(p).forEach((level) => {
+            const lineTag = level.ma_type === "ema" ? "EMA" : "SMA";
+            lines.push(
+              `${level.label} ${lineTag}${level.length}: above -> ${String(level.above_action).toUpperCase()}; ` +
+              `below -> ${String(level.below_action).toUpperCase()}.`
+            );
+          });
+        } else if (normalizeMaMode(p.mode) === "mapped") {
+          const maType = normalizeMaType(p.ma_type, kind === "ema" ? "ema" : "sma");
+          const lineTag = maType === "ema" ? "EMA" : "SMA";
+          const len = Math.max(2, parseInt(String(p.length || "30"), 10) || 30);
+          lines.push(
+            `${lineTag}${len}: above -> ${String(normalizeMaAction(p.above_action)).toUpperCase()}; ` +
+            `below -> ${String(normalizeMaAction(p.below_action)).toUpperCase()}.`
+          );
+        } else {
+          const maType = normalizeMaType(p.ma_type, kind === "ema" ? "ema" : "sma");
+          const lineTag = maType === "ema" ? "EMA" : "SMA";
+          const len = Math.max(2, parseInt(String(p.length || "30"), 10) || 30);
+          lines.push(`${lineTag}${len}: BUY=${relTxt(p.buy_relation)}; SELL=${relTxt(p.sell_relation)}.`);
+          if (Number(p.track_derivative || 0) === 1) {
+            const buyD = asNumber(p.buy_derivative_min);
+            const sellD = asNumber(p.sell_derivative_max);
+            const buyTxt = buyD === null ? "any" : `>= ${fmtRuleNum(buyD, 4)}`;
+            const sellTxt = sellD === null ? "any" : `<= ${fmtRuleNum(sellD, 4)}`;
+            lines.push(`${maType === "ema" ? "dEMA" : "dMA"}${len} filter: BUY ${buyTxt}; SELL ${sellTxt}.`);
+          }
+          if (Number(p.unless_enabled || 0) === 1) {
+            const uType = normalizeMaType(p.unless_type, "sma");
+            const uTag = uType === "ema" ? "EMA" : "SMA";
+            const uLen = Math.max(2, parseInt(String(p.unless_length || "30"), 10) || 30);
+            const uRel = String(p.unless_relation || "above").trim().toLowerCase();
+            const uAction = String(p.unless_action || "sell").trim().toUpperCase();
+            lines.push(`Unless override: if ${lineTag}${len} ${uRel} ${uTag}${uLen} -> force ${uAction}.`);
+          }
+        }
+      } else if (kind === "rsi") {
+        const os = fmtRuleNum(p.oversold, 2);
+        const ob = fmtRuleNum(p.overbought, 2);
+        const osRel = String(p.oversold_relation || "below").trim().toLowerCase();
+        const obRel = String(p.overbought_relation || "above").trim().toLowerCase();
+        const osActionRaw = String(p.oversold_action || "buy").trim().toUpperCase();
+        const obActionRaw = String(p.overbought_action || "sell").trim().toUpperCase();
+        const osAction = (osActionRaw === "IGNORE" || osActionRaw === "HOLD") ? "HOLD" : osActionRaw;
+        const obAction = (obActionRaw === "IGNORE" || obActionRaw === "HOLD") ? "HOLD" : obActionRaw;
+        lines.push(`RSI thresholds: oversold ${osRel} ${os} -> ${osAction}; overbought ${obRel} ${ob} -> ${obAction}.`);
+        if (Number(p.signal_override_enabled || 0) === 1) {
+          lines.push(`Override enabled: ${scopeTxt(p.signal_override_scope)} on ${targetLabelList(p.signal_override_targets)}.`);
+        }
+      } else if (kind === "rsi_d") {
+        lines.push(`dRSI lock: BUY >= ${fmtRuleNum(p.buy_above, 4)}; SELL <= ${fmtRuleNum(p.sell_below, 4)}.`);
+      } else if (kind === "roc" || kind === "rate_of_change") {
+        const len = Math.max(1, parseInt(String(p.length || "12"), 10) || 12);
+        const buyCond = rocCondTxt(p.buy_condition);
+        const sellCond = rocCondTxt(p.sell_condition);
+        const buyThr = asNumber(p.buy_threshold_pct);
+        const sellThr = asNumber(p.sell_threshold_pct);
+        lines.push(`ROC (${len}): BUY=${buyCond}; SELL=${sellCond}.`);
+        lines.push(
+          `Thresholds (%): BUY ${fmtRuleNum(buyThr === null ? 0 : buyThr, 3)} / ` +
+          `SELL ${fmtRuleNum(sellThr === null ? 0 : sellThr, 3)}.`
+        );
+      } else if (kind === "sar" || kind === "psar" || kind === "parabolic_sar" || kind === "parabolic") {
+        const stepRaw = asNumber(p.step);
+        const maxRaw = asNumber(p.max_step);
+        const step = stepRaw === null ? 0.02 : Math.max(0.0001, stepRaw);
+        const maxStep = maxRaw === null ? 0.2 : Math.max(step, maxRaw);
+        const buyCond = sarCondTxt(p.buy_condition);
+        const sellCond = sarCondTxt(p.sell_condition);
+        lines.push(
+          `Parabolic SAR (step ${fmtRuleNum(step, 4)}, max ${fmtRuleNum(maxStep, 4)}): ` +
+          `BUY=${buyCond}; SELL=${sellCond}.`
+        );
+        lines.push("Cross conditions trigger only on the bar price flips through SAR.");
+      } else if (kind === "bb") {
+        const len = Math.max(2, parseInt(String(p.length || "20"), 10) || 20);
+        const stdMultRaw = asNumber(p.std_mult);
+        const stdMult = stdMultRaw === null ? 2 : Math.max(0.1, stdMultRaw);
+        const buyCond = bbCondTxt(p.buy_condition);
+        const sellCond = bbCondTxt(p.sell_condition);
+        const squeeze = asNumber(p.squeeze_threshold_pct);
+        const pbBuy = asNumber(p.percent_b_buy_threshold);
+        const pbSell = asNumber(p.percent_b_sell_threshold);
+        lines.push(`Bollinger (${len}, ${fmtRuleNum(stdMult, 2)}σ): BUY=${buyCond}; SELL=${sellCond}.`);
+        lines.push(
+          `Squeeze threshold: <= ${fmtRuleNum(squeeze === null ? 5 : squeeze, 3)}% width; ` +
+          `%B thresholds: BUY ${fmtRuleNum(pbBuy === null ? 0.2 : pbBuy, 3)} / SELL ${fmtRuleNum(pbSell === null ? 0.8 : pbSell, 3)}.`
+        );
+      } else if (kind === "ichimoku" || kind === "ichimoku_cloud" || kind === "ichi") {
+        const tenkan = Math.max(1, parseInt(String(p.conversion_line_length || p.tenkan_length || "9"), 10) || 9);
+        const kijun = Math.max(1, parseInt(String(p.base_line_length || p.kijun_length || "26"), 10) || 26);
+        const senkouB = Math.max(2, parseInt(String(p.leading_span_b_length || p.senkou_b_length || "52"), 10) || 52);
+        const displacement = Math.max(1, parseInt(String(p.lagging_line_displacement || p.displacement || "26"), 10) || 26);
+        const delayed = Math.max(1, parseInt(String(p.delayed_cross_lookback || "3"), 10) || 3);
+        const buyMode = normalizeIchiMatchMode(p.buy_match_mode, "all");
+        const sellMode = normalizeIchiMatchMode(p.sell_match_mode, "all");
+        const blockMode = normalizeIchiMatchMode(p.block_match_mode, "all");
+        const buyCond = formatIchiConditionSet(
+          Array.isArray(p.buy_conditions) && p.buy_conditions.length ? p.buy_conditions : p.buy_condition
+        );
+        const sellCond = formatIchiConditionSet(
+          Array.isArray(p.sell_conditions) && p.sell_conditions.length ? p.sell_conditions : p.sell_condition
+        );
+        const blockCond = formatIchiConditionSet(
+          Array.isArray(p.block_conditions) && p.block_conditions.length ? p.block_conditions : p.block_condition
+        );
+        const thick = asNumber(p.cloud_thickness_threshold_pct);
+        const kijunTol = asNumber(p.base_line_bounce_tolerance_pct ?? p.kijun_bounce_tolerance_pct);
+        lines.push(
+          `Ichimoku (Conversion/Base/Leading B ${tenkan}/${kijun}/${senkouB}, disp ${displacement}): ` +
+          `BUY(${buyMode.toUpperCase()})=${buyCond}; SELL(${sellMode.toUpperCase()})=${sellCond}; ` +
+          `BLOCK/HOLD(${blockMode.toUpperCase()})=${blockCond}.`
+        );
+        lines.push(
+          `Cloud thickness threshold: ${fmtRuleNum(thick === null ? 1.0 : thick, 3)}%; ` +
+          `Base Line bounce tolerance: ${fmtRuleNum(kijunTol === null ? 0.35 : kijunTol, 3)}%.`
+        );
+        lines.push(`Delayed cross lookback: ${delayed} bars.`);
+      } else if (kind === "ttm" || kind === "ttm_squeeze" || kind === "squeeze_momentum") {
+        const bbLen = Math.max(2, parseInt(String(p.bb_length || "20"), 10) || 20);
+        const bbMultRaw = asNumber(p.bb_mult);
+        const bbMult = bbMultRaw === null ? 2.0 : Math.max(0.1, bbMultRaw);
+        const kcLen = Math.max(2, parseInt(String(p.kc_length || "20"), 10) || 20);
+        const kcMultRaw = asNumber(p.kc_mult);
+        const kcMult = kcMultRaw === null ? 1.5 : Math.max(0.1, kcMultRaw);
+        const momLen = Math.max(2, parseInt(String(p.momentum_length || "20"), 10) || 20);
+        const buyCond = ttmCondTxt(p.buy_condition);
+        const sellCond = ttmCondTxt(p.sell_condition);
+        lines.push(
+          `TTM Squeeze (BB ${bbLen}/${fmtRuleNum(bbMult, 2)}, KC ${kcLen}/${fmtRuleNum(kcMult, 2)}, MOM ${momLen}): ` +
+          `BUY=${buyCond}; SELL=${sellCond}.`
+        );
+        lines.push("Squeeze state uses BB-inside-KC; momentum is centered linreg endpoint.");
+      } else if (kind === "heikin_ashi" || kind === "ha") {
+        const modeRaw = String(p.mode || "transition").trim().toLowerCase();
+        const mode = (modeRaw === "state") ? "state" : "transition";
+        const dojiTolRaw = asNumber(p.doji_tolerance_pct);
+        if (mode === "state") {
+          lines.push("Heikin Ashi state: BUY when HA candle bullish; SELL when bearish.");
+        } else {
+          lines.push("Heikin Ashi transition: BUY on bearish→bullish flip; SELL on bullish→bearish flip.");
+        }
+        if (dojiTolRaw === null) {
+          lines.push("Doji tolerance: disabled (only exact HA open=close is doji).");
+        } else {
+          const dojiTol = Math.max(0, dojiTolRaw);
+          lines.push(`Doji tolerance: candle body <= ${fmtRuleNum(dojiTol, 3)}% treated as doji.`);
+        }
+        if (Number(p.signal_override_enabled || 0) === 1) {
+          lines.push(`Override enabled: ${scopeTxt(p.signal_override_scope)} on ${targetLabelList(p.signal_override_targets)}.`);
+        }
+      } else if (kind === "macd") {
+        const mode = String(p.mode || "signal_cross").trim().toLowerCase();
+        const fast = Math.max(2, parseInt(String(p.fast_length || "12"), 10) || 12);
+        const slow = Math.max(2, parseInt(String(p.slow_length || "26"), 10) || 26);
+        const signalLen = Math.max(2, parseInt(String(p.signal_length || "9"), 10) || 9);
+        const modeLabel = MACD_MODE_LABEL[mode] || mode;
+        lines.push(`MACD mode: ${modeLabel} (${fast}/${slow}/${signalLen}).`);
+        lines.push(MACD_MODE_SUMMARY[mode] || "Buy when MACD is above signal; sell when MACD is below signal.");
+        if (mode === "macd_derivative_sign") {
+          const buyAboveRaw = asNumber(p.derivative_buy_above);
+          const sellBelowRaw = asNumber(p.derivative_sell_below);
+          const dScope = dualSignalScope(p.derivative_signal_scope);
+          const buyAbove = buyAboveRaw === null ? 0 : buyAboveRaw;
+          const sellBelow = sellBelowRaw === null ? 0 : sellBelowRaw;
+          lines.push(`dMACD thresholds: BUY > ${fmtRuleNum(buyAbove, 4)}; SELL < ${fmtRuleNum(sellBelow, 4)}.`);
+          lines.push(`dMACD side mode: ${scopeTxt(dScope)}.`);
+        }
+        if (Number(p.signal_override_enabled || 0) === 1) {
+          lines.push(`Override enabled: ${scopeTxt(p.signal_override_scope)} on ${targetLabelList(p.signal_override_targets)}.`);
+        }
+      } else {
+        lines.push("Unsupported rule.");
+      }
+
+      const rid = String(p.rule_id || "").trim();
+      if (rid) lines.push(`Rule ID: ${rid}`);
+      return lines;
+    }
+
+    function ruleSummaryHtml(rule, idx) {
+      return ruleSummaryLines(rule, idx).map((ln) => escHtml(ln)).join("<br>");
+    }
+
+    function renderRules() {
+      const list = b.querySelector("#if_rules_list");
+      ensureAllRuleIdentity();
+      if (!list) return;
+      if (!indicatorForgeRules.length) {
+        list.innerHTML = "<div class='small'>No rules added yet.</div>";
+        syncRsiOverrideTargets();
+        syncMacdOverrideTargets();
+        syncHaOverrideTargets();
+        syncTextarea();
+        refreshPreview();
+        return;
+      }
+      list.innerHTML = "<table><thead><tr><th>#</th><th>Name</th><th>Kind</th><th>Summary</th><th></th></tr></thead><tbody>" +
+        indicatorForgeRules.map((r, i) => {
+          const params = r && r.params && typeof r.params === "object" ? r.params : {};
+          const summary = ruleSummaryHtml(r, i + 1);
+          const rows = [
+            `<tr><td>${i + 1}</td><td>${escHtml(r.name || "")}</td><td>${escHtml(String(r.kind || "").toUpperCase())}</td><td class='small'>${summary}</td><td><button type='button' class='btn danger if_del' data-idx='${i}'>Delete</button></td></tr>`
+          ];
+          if ((String(r && r.kind ? r.kind : "").trim().toLowerCase() === "ma" || String(r && r.kind ? r.kind : "").trim().toLowerCase() === "ema")
+              && normalizeMaMode(params.mode) === "ribbon") {
+            const rid = String(params.rule_id || "").trim();
+            maRibbonLevelsFromParams(params).forEach((level) => {
+              const childId = maRibbonLevelRuleId(rid, level.slot);
+              const suffix = String(level.label || "L").charAt(0).toUpperCase() || "L";
+              const childSummary = `${maRibbonLevelSummaryLine(level)}<br>${escHtml(`Rule ID: ${childId}`)}`;
+              rows.push(
+                `<tr><td>${i + 1}.${suffix}</td><td>${escHtml(maRibbonLevelDisplayName(r, level))}</td><td>RIBBON LEVEL</td><td class='small'>${childSummary}</td><td></td></tr>`
+              );
+            });
+          }
+          return rows.join("");
+        }).join("") +
+        "</tbody></table>";
+      list.querySelectorAll(".if_del").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const idx = parseInt(btn.dataset.idx || "-1", 10);
+          if (idx >= 0) indicatorForgeRules.splice(idx, 1);
+          renderRules();
+        });
+      });
+      syncRsiOverrideTargets();
+      syncMacdOverrideTargets();
+      syncHaOverrideTargets();
+      syncTextarea();
+      refreshPreview();
+    }
+
+    function addRule(rule) {
+      if (!rule) return;
+      ensureRuleIdentity(rule);
+      indicatorForgeRules.push(rule);
+      renderRules();
+    }
+
+    function syncRsiOverrideTargets() {
+      const sel = b.querySelector("#if_rsi_sig_override_targets");
+      if (!sel) return;
+      const prev = new Set(Array.from(sel.selectedOptions || []).map((o) => String(o.value || "")));
+      const opts = indicatorForgeRuleTargetEntries({ excludeKinds: ["rsi"] })
+        .map((entry) => `<option value='${escHtml(entry.id)}'>${escHtml(entry.label)}</option>`);
+      if (!opts.length) {
+        sel.innerHTML = "<option value='' disabled>No saved non-RSI rules yet.</option>";
+      } else {
+        sel.innerHTML = opts.join("");
+        Array.from(sel.options).forEach((o) => {
+          if (prev.has(String(o.value || ""))) o.selected = true;
+        });
+      }
+      syncRsiSignalOverridePrompt();
+    }
+
+    function syncRsiSignalOverridePrompt() {
+      const on = b.querySelector("#if_rsi_sig_override_on");
+      const wrap = b.querySelector("#if_rsi_sig_override_wrap");
+      if (!wrap) return;
+      wrap.style.display = on && on.checked ? "" : "none";
+    }
+
+    function syncMacdOverrideTargets() {
+      const sel = b.querySelector("#if_macd_sig_override_targets");
+      if (!sel) return;
+      const prev = new Set(Array.from(sel.selectedOptions || []).map((o) => String(o.value || "")));
+      const opts = indicatorForgeRuleTargetEntries()
+        .map((entry) => `<option value='${escHtml(entry.id)}'>${escHtml(entry.label)}</option>`);
+      if (!opts.length) {
+        sel.innerHTML = "<option value='' disabled>No saved rules yet.</option>";
+      } else {
+        sel.innerHTML = opts.join("");
+        Array.from(sel.options).forEach((o) => {
+          if (prev.has(String(o.value || ""))) o.selected = true;
+        });
+      }
+      syncMacdSignalOverridePrompt();
+    }
+
+    function syncMacdSignalOverridePrompt() {
+      const on = b.querySelector("#if_macd_sig_override_on");
+      const wrap = b.querySelector("#if_macd_sig_override_wrap");
+      if (!wrap) return;
+      wrap.style.display = on && on.checked ? "" : "none";
+    }
+
+    function syncHaOverrideTargets() {
+      const sel = b.querySelector("#if_ha_sig_override_targets");
+      if (!sel) return;
+      const prev = new Set(Array.from(sel.selectedOptions || []).map((o) => String(o.value || "")));
+      const opts = indicatorForgeRuleTargetEntries({ excludeKinds: ["heikin_ashi", "ha"] })
+        .map((entry) => `<option value='${escHtml(entry.id)}'>${escHtml(entry.label)}</option>`);
+      if (!opts.length) {
+        sel.innerHTML = "<option value='' disabled>No saved non-Heikin Ashi rules yet.</option>";
+      } else {
+        sel.innerHTML = opts.join("");
+        Array.from(sel.options).forEach((o) => {
+          if (prev.has(String(o.value || ""))) o.selected = true;
+        });
+      }
+      syncHaSignalOverridePrompt();
+    }
+
+    function syncHaSignalOverridePrompt() {
+      const on = b.querySelector("#if_ha_sig_override_on");
+      const wrap = b.querySelector("#if_ha_sig_override_wrap");
+      if (!wrap) return;
+      wrap.style.display = on && on.checked ? "" : "none";
+    }
+
+    function syncMaModeSummary() {
+      const modeCtrl = b.querySelector("#if_ma_mode");
+      const singleWrap = b.querySelector("#if_ma_single_wrap");
+      const ribbonWrap = b.querySelector("#if_ma_ribbon_wrap");
+      const summary = b.querySelector("#if_ma_mode_summary");
+      const mode = normalizeMaMode(modeCtrl && modeCtrl.value);
+      if (singleWrap) singleWrap.style.display = mode === "ribbon" ? "none" : "";
+      if (ribbonWrap) ribbonWrap.style.display = mode === "ribbon" ? "" : "none";
+      if (summary) {
+        summary.textContent = mode === "ribbon"
+          ? "Ribbon mode will create three MA rules at once: short, medium, and long. Each level gets its own rule ID and can be overridden separately."
+          : "Single-line mode uses one SMA/EMA with optional derivative and unless override.";
+      }
+    }
+
+    const MACD_MODE_LABEL = {
+      signal_cross: "Signal Cross",
+      cross_regime: "Cross + Regime Filter",
+      hist_momentum: "Histogram Momentum",
+      zero_reclaim_loss: "Zero-Line Reclaim/Loss",
+      macd_derivative_sign: "MACD Derivative Sign"
+    };
+
+    const MACD_MODE_SUMMARY = {
+      signal_cross: "Buy when MACD is above signal; sell when MACD is below signal.",
+      cross_regime: "Buy only on bullish MACD/signal cross while MACD is above zero; sell only on bearish cross while MACD is below zero.",
+      hist_momentum: "Buy when histogram is positive and rising; sell when histogram is negative and falling.",
+      zero_reclaim_loss: "Buy when MACD is above zero and above signal; sell when MACD is below signal while both are above zero.",
+      macd_derivative_sign: "Buy when MACD derivative is above buy threshold; sell when below sell threshold; side mode can be BUY-only, SELL-only, or both."
+    };
+    const HA_MODE_SUMMARY = {
+      transition: "Transition: buy bearish→bullish, sell bullish→bearish.",
+      state: "State: buy bullish, sell bearish."
+    };
+
+    function syncMacdDerivativePrompt() {
+      const modeCtrl = b.querySelector("#if_macd_mode");
+      const wrap = b.querySelector("#if_macd_derivative_wrap");
+      if (!modeCtrl || !wrap) return;
+      wrap.style.display = String(modeCtrl.value || "") === "macd_derivative_sign" ? "" : "none";
+    }
+
+    function syncMacdSummary() {
+      const modeCtrl = b.querySelector("#if_macd_mode");
+      const summary = b.querySelector("#if_macd_summary");
+      if (!modeCtrl || !summary) return;
+      const mode = String(modeCtrl.value || "signal_cross");
+      summary.textContent = MACD_MODE_SUMMARY[mode] || "Buy on bullish MACD/signal cross; sell on bearish MACD/signal cross.";
+      syncMacdDerivativePrompt();
+    }
+
+    function syncHaSummary() {
+      const modeCtrl = b.querySelector("#if_ha_mode");
+      const summary = b.querySelector("#if_ha_summary");
+      if (!modeCtrl || !summary) return;
+      const mode = String(modeCtrl.value || "transition").trim().toLowerCase();
+      summary.textContent = HA_MODE_SUMMARY[mode] || HA_MODE_SUMMARY.transition;
+    }
+
+    b.querySelector("#if_add_ma").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_ma_name").value || "").trim();
+      const mode = normalizeMaMode(b.querySelector("#if_ma_mode").value);
+      if (mode === "ribbon") {
+        const levels = MA_RIBBON_LEVEL_ORDER.map((slot) => ({
+          slot,
+          ma_type: normalizeMaType(b.querySelector(`#if_ma_ribbon_${slot}_type`).value, "sma"),
+          length: Math.max(2, parseInt(b.querySelector(`#if_ma_ribbon_${slot}_length`).value || String(MA_RIBBON_DEFAULT_LENGTHS[slot]), 10)),
+          above_action: normalizeMaAction(b.querySelector(`#if_ma_ribbon_${slot}_above`).value),
+          below_action: normalizeMaAction(b.querySelector(`#if_ma_ribbon_${slot}_below`).value)
+        }));
+        const baseRule = {
+          name: nameRaw || "MA Ribbon",
+          kind: "ma",
+          params: {}
+        };
+        levels.forEach((level) => addRule(maMappedRuleFromLevel(baseRule, level)));
+        return;
+      }
+      const maType = normalizeMaType(b.querySelector("#if_ma_type").value, "sma");
+      const len = Math.max(2, parseInt(b.querySelector("#if_ma_length").value || "30", 10));
+      const trackD = b.querySelector("#if_ma_d_on").checked ? 1 : 0;
+      const dBuyRaw = b.querySelector("#if_ma_d_buy").value;
+      const dSellRaw = b.querySelector("#if_ma_d_sell").value;
+      const unlessOn = b.querySelector("#if_ma_unless_on").checked ? 1 : 0;
+      addRule({
+        name: nameRaw || `${maType.toUpperCase()}${len}`,
+        kind: "ma",
+        params: {
+          mode: "single",
+          length: len,
+          ma_type: maType,
+          buy_relation: b.querySelector("#if_ma_buy").value,
+          sell_relation: b.querySelector("#if_ma_sell").value,
+          track_derivative: trackD,
+          buy_derivative_min: dBuyRaw === "" ? null : parseFloat(dBuyRaw),
+          sell_derivative_max: dSellRaw === "" ? null : parseFloat(dSellRaw),
+          unless_enabled: unlessOn,
+          unless_relation: b.querySelector("#if_ma_unless_rel").value,
+          unless_type: b.querySelector("#if_ma_unless_type").value,
+          unless_length: Math.max(2, parseInt(b.querySelector("#if_ma_unless_len").value || "78", 10)),
+          unless_action: b.querySelector("#if_ma_unless_action").value
+        }
+      });
+    });
+
+    b.querySelector("#if_add_rsi").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_rsi_name").value || "").trim();
+      const overrideOn = b.querySelector("#if_rsi_sig_override_on");
+      const overrideScopeSel = b.querySelector("#if_rsi_sig_override_scope");
+      const overrideTargetsSel = b.querySelector("#if_rsi_sig_override_targets");
+      const overrideEnabled = Boolean(overrideOn && overrideOn.checked);
+      const overrideScopeRaw = String((overrideScopeSel && overrideScopeSel.value) || "both").trim().toLowerCase();
+      const overrideScope = (overrideScopeRaw === "buy" || overrideScopeRaw === "sell") ? overrideScopeRaw : "both";
+      const overrideTargets = overrideEnabled && overrideTargetsSel
+        ? Array.from(overrideTargetsSel.selectedOptions || [])
+            .map((o) => String(o.value || "").trim())
+            .filter(Boolean)
+        : [];
+      addRule({
+        name: nameRaw || "RSI",
+        kind: "rsi",
+        params: {
+          oversold: parseFloat(b.querySelector("#if_rsi_oversold").value || "30"),
+          oversold_relation: b.querySelector("#if_rsi_oversold_rel").value,
+          oversold_action: b.querySelector("#if_rsi_oversold_action").value,
+          overbought: parseFloat(b.querySelector("#if_rsi_overbought").value || "70"),
+          overbought_relation: b.querySelector("#if_rsi_overbought_rel").value,
+          overbought_action: b.querySelector("#if_rsi_overbought_action").value,
+          signal_override_enabled: overrideEnabled ? 1 : 0,
+          signal_override_scope: overrideScope,
+          signal_override_targets: overrideTargets
+        }
+      });
+    });
+
+    b.querySelector("#if_add_drsi").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_drsi_name").value || "").trim();
+      addRule({
+        name: nameRaw || "RSI Derivative",
+        kind: "rsi_d",
+        params: {
+          buy_above: parseFloat(b.querySelector("#if_drsi_buy").value || "0"),
+          sell_below: parseFloat(b.querySelector("#if_drsi_sell").value || "0")
+        }
+      });
+    });
+
+    b.querySelector("#if_add_roc").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_roc_name").value || "").trim();
+      const length = Math.max(1, parseInt(b.querySelector("#if_roc_length").value || "12", 10));
+      const buyThrRaw = parseFloat(b.querySelector("#if_roc_buy_thr").value || "0");
+      const sellThrRaw = parseFloat(b.querySelector("#if_roc_sell_thr").value || "0");
+      addRule({
+        name: nameRaw || "ROC",
+        kind: "roc",
+        params: {
+          length,
+          buy_condition: b.querySelector("#if_roc_buy_cond").value,
+          sell_condition: b.querySelector("#if_roc_sell_cond").value,
+          buy_threshold_pct: Number.isFinite(buyThrRaw) ? buyThrRaw : 0.0,
+          sell_threshold_pct: Number.isFinite(sellThrRaw) ? sellThrRaw : 0.0
+        }
+      });
+    });
+
+    b.querySelector("#if_add_sar").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_sar_name").value || "").trim();
+      const stepRaw = parseFloat(b.querySelector("#if_sar_step").value || "0.02");
+      const maxRaw = parseFloat(b.querySelector("#if_sar_max").value || "0.2");
+      const step = Number.isFinite(stepRaw) ? Math.max(0.0001, stepRaw) : 0.02;
+      const maxStep = Number.isFinite(maxRaw) ? Math.max(step, maxRaw) : Math.max(step, 0.2);
+      addRule({
+        name: nameRaw || "Parabolic SAR",
+        kind: "sar",
+        params: {
+          step,
+          max_step: maxStep,
+          buy_condition: b.querySelector("#if_sar_buy_cond").value,
+          sell_condition: b.querySelector("#if_sar_sell_cond").value
+        }
+      });
+    });
+
+    b.querySelector("#if_add_bb").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_bb_name").value || "").trim();
+      const length = Math.max(2, parseInt(b.querySelector("#if_bb_length").value || "20", 10));
+      const stdMultRaw = parseFloat(b.querySelector("#if_bb_std_mult").value || "2");
+      const stdMult = Number.isFinite(stdMultRaw) ? Math.max(0.1, stdMultRaw) : 2.0;
+      const squeezeRaw = parseFloat(b.querySelector("#if_bb_squeeze").value || "5");
+      const pbBuyRaw = parseFloat(b.querySelector("#if_bb_pctb_buy").value || "0.2");
+      const pbSellRaw = parseFloat(b.querySelector("#if_bb_pctb_sell").value || "0.8");
+      addRule({
+        name: nameRaw || "Bollinger Bands",
+        kind: "bb",
+        params: {
+          length,
+          std_mult: stdMult,
+          buy_condition: b.querySelector("#if_bb_buy_cond").value,
+          sell_condition: b.querySelector("#if_bb_sell_cond").value,
+          squeeze_threshold_pct: Number.isFinite(squeezeRaw) ? squeezeRaw : 5.0,
+          percent_b_buy_threshold: Number.isFinite(pbBuyRaw) ? pbBuyRaw : 0.2,
+          percent_b_sell_threshold: Number.isFinite(pbSellRaw) ? pbSellRaw : 0.8
+        }
+      });
+    });
+
+    b.querySelector("#if_add_ichi").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_ichi_name").value || "").trim();
+      const tenkan = Math.max(1, parseInt(b.querySelector("#if_ichi_tenkan").value || "9", 10));
+      const kijun = Math.max(1, parseInt(b.querySelector("#if_ichi_kijun").value || "26", 10));
+      const senkouB = Math.max(2, parseInt(b.querySelector("#if_ichi_senkou_b").value || "52", 10));
+      const displacement = Math.max(1, parseInt(b.querySelector("#if_ichi_displacement").value || "26", 10));
+      const thicknessRaw = parseFloat(b.querySelector("#if_ichi_thickness").value || "1");
+      const kijunTolRaw = parseFloat(b.querySelector("#if_ichi_kijun_tol").value || "0.35");
+      const delayedLookback = Math.max(1, parseInt(b.querySelector("#if_ichi_delayed_lookback").value || "3", 10));
+      const buyMode = normalizeIchiMatchMode(b.querySelector("#if_ichi_buy_mode")?.value, "all");
+      const sellMode = normalizeIchiMatchMode(b.querySelector("#if_ichi_sell_mode")?.value, "all");
+      const blockMode = normalizeIchiMatchMode(b.querySelector("#if_ichi_block_mode")?.value, "all");
+      const buyConditions = normalizeIchiConditionList(
+        getMultiSelectValues(b.querySelector("#if_ichi_buy_cond")),
+        "hold"
+      );
+      const sellConditions = normalizeIchiConditionList(
+        getMultiSelectValues(b.querySelector("#if_ichi_sell_cond")),
+        "hold"
+      );
+      const blockConditions = normalizeIchiConditionList(
+        getMultiSelectValues(b.querySelector("#if_ichi_block_cond")),
+        "hold"
+      );
+      const storedBuyConditions = englishIchiConditionList(buyConditions);
+      const storedSellConditions = englishIchiConditionList(sellConditions);
+      const storedBlockConditions = englishIchiConditionList(blockConditions);
+      addRule({
+        name: nameRaw || "Ichimoku",
+        kind: "ichimoku",
+        params: {
+          conversion_line_length: tenkan,
+          base_line_length: kijun,
+          leading_span_b_length: senkouB,
+          lagging_line_displacement: displacement,
+          buy_condition: storedBuyConditions[0] || "hold",
+          sell_condition: storedSellConditions[0] || "hold",
+          block_condition: storedBlockConditions[0] || "hold",
+          buy_conditions: storedBuyConditions,
+          sell_conditions: storedSellConditions,
+          block_conditions: storedBlockConditions,
+          buy_match_mode: buyMode,
+          sell_match_mode: sellMode,
+          block_match_mode: blockMode,
+          cloud_thickness_threshold_pct: Number.isFinite(thicknessRaw) ? thicknessRaw : 1.0,
+          base_line_bounce_tolerance_pct: Number.isFinite(kijunTolRaw) ? kijunTolRaw : 0.35,
+          delayed_cross_lookback: delayedLookback
+        }
+      });
+    });
+
+    b.querySelector("#if_add_ttm").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_ttm_name").value || "").trim();
+      const bbLen = Math.max(2, parseInt(b.querySelector("#if_ttm_bb_len").value || "20", 10));
+      const bbMultRaw = parseFloat(b.querySelector("#if_ttm_bb_mult").value || "2");
+      const bbMult = Number.isFinite(bbMultRaw) ? Math.max(0.1, bbMultRaw) : 2.0;
+      const kcLen = Math.max(2, parseInt(b.querySelector("#if_ttm_kc_len").value || "20", 10));
+      const kcMultRaw = parseFloat(b.querySelector("#if_ttm_kc_mult").value || "1.5");
+      const kcMult = Number.isFinite(kcMultRaw) ? Math.max(0.1, kcMultRaw) : 1.5;
+      const momLen = Math.max(2, parseInt(b.querySelector("#if_ttm_mom_len").value || "20", 10));
+      addRule({
+        name: nameRaw || "TTM Squeeze",
+        kind: "ttm",
+        params: {
+          bb_length: bbLen,
+          bb_mult: bbMult,
+          kc_length: kcLen,
+          kc_mult: kcMult,
+          momentum_length: momLen,
+          buy_condition: b.querySelector("#if_ttm_buy_cond").value,
+          sell_condition: b.querySelector("#if_ttm_sell_cond").value
+        }
+      });
+    });
+
+    b.querySelector("#if_add_ha").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_ha_name").value || "").trim();
+      const modeRaw = String((b.querySelector("#if_ha_mode").value || "transition")).trim().toLowerCase();
+      const mode = (modeRaw === "state") ? "state" : "transition";
+      const dojiRaw = (b.querySelector("#if_ha_doji_tol").value || "").trim();
+      const overrideOn = b.querySelector("#if_ha_sig_override_on");
+      const overrideScopeSel = b.querySelector("#if_ha_sig_override_scope");
+      const overrideTargetsSel = b.querySelector("#if_ha_sig_override_targets");
+      const overrideEnabled = Boolean(overrideOn && overrideOn.checked);
+      const overrideScopeRaw = String((overrideScopeSel && overrideScopeSel.value) || "both").trim().toLowerCase();
+      const overrideScope = (overrideScopeRaw === "buy" || overrideScopeRaw === "sell") ? overrideScopeRaw : "both";
+      const overrideTargets = overrideEnabled && overrideTargetsSel
+        ? Array.from(overrideTargetsSel.selectedOptions || [])
+            .map((o) => String(o.value || "").trim())
+            .filter(Boolean)
+        : [];
+      const params = {
+        mode,
+        signal_override_enabled: overrideEnabled ? 1 : 0,
+        signal_override_scope: overrideScope,
+        signal_override_targets: overrideTargets
+      };
+      if (dojiRaw !== "") {
+        const parsed = parseFloat(dojiRaw);
+        if (Number.isFinite(parsed)) params.doji_tolerance_pct = Math.max(0, parsed);
+      }
+      addRule({
+        name: nameRaw || "Heikin Ashi",
+        kind: "heikin_ashi",
+        params
+      });
+    });
+
+    b.querySelector("#if_add_macd").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_macd_name").value || "").trim();
+      const derivativeBuyRaw = (b.querySelector("#if_macd_d_buy").value || "").trim();
+      const derivativeSellRaw = (b.querySelector("#if_macd_d_sell").value || "").trim();
+      const derivativeScopeCtrl = b.querySelector("#if_macd_d_scope");
+      const derivativeScope = dualSignalScope((derivativeScopeCtrl && derivativeScopeCtrl.value) || "both");
+      const overrideOn = b.querySelector("#if_macd_sig_override_on");
+      const overrideScopeSel = b.querySelector("#if_macd_sig_override_scope");
+      const overrideTargetsSel = b.querySelector("#if_macd_sig_override_targets");
+      const overrideEnabled = Boolean(overrideOn && overrideOn.checked);
+      const overrideScopeRaw = String((overrideScopeSel && overrideScopeSel.value) || "both").trim().toLowerCase();
+      const overrideScope = (overrideScopeRaw === "buy" || overrideScopeRaw === "sell") ? overrideScopeRaw : "both";
+      const overrideTargets = overrideEnabled && overrideTargetsSel
+        ? Array.from(overrideTargetsSel.selectedOptions || [])
+            .map((o) => String(o.value || "").trim())
+            .filter(Boolean)
+        : [];
+      addRule({
+        name: nameRaw || "MACD",
+        kind: "macd",
+        params: {
+          mode: b.querySelector("#if_macd_mode").value,
+          fast_length: Math.max(2, parseInt(b.querySelector("#if_macd_fast").value || "12", 10)),
+          slow_length: Math.max(2, parseInt(b.querySelector("#if_macd_slow").value || "26", 10)),
+          signal_length: Math.max(2, parseInt(b.querySelector("#if_macd_signal").value || "9", 10)),
+          derivative_buy_above: derivativeBuyRaw === "" ? null : parseFloat(derivativeBuyRaw),
+          derivative_sell_below: derivativeSellRaw === "" ? null : parseFloat(derivativeSellRaw),
+          derivative_signal_scope: derivativeScope,
+          signal_override_enabled: overrideEnabled ? 1 : 0,
+          signal_override_scope: overrideScope,
+          signal_override_targets: overrideTargets
+        }
+      });
+    });
+    const macdModeCtrl = b.querySelector("#if_macd_mode");
+    if (macdModeCtrl) {
+      macdModeCtrl.addEventListener("change", syncMacdSummary);
+      macdModeCtrl.addEventListener("input", syncMacdSummary);
+    }
+    const haModeCtrl = b.querySelector("#if_ha_mode");
+    if (haModeCtrl) {
+      haModeCtrl.addEventListener("change", syncHaSummary);
+      haModeCtrl.addEventListener("input", syncHaSummary);
+    }
+    const maModeCtrl = b.querySelector("#if_ma_mode");
+    if (maModeCtrl) {
+      maModeCtrl.addEventListener("change", syncMaModeSummary);
+      maModeCtrl.addEventListener("input", syncMaModeSummary);
+    }
+    const backtestCandlesCtrl = b.querySelector("#if_backtest_candles");
+    if (backtestCandlesCtrl) {
+      backtestCandlesCtrl.addEventListener("change", refreshPreview);
+      backtestCandlesCtrl.addEventListener("input", refreshPreview);
+    }
+    const backtestRefreshBtn = b.querySelector("#if_backtest_refresh_btn");
+    const backtestHost = b.querySelector("#if_backtest_table");
+    const forgeRunBtn = b.querySelector("#if_forge_run_btn");
+    const forgeHost = b.querySelector("#if_forge_table");
+    if (backtestRefreshBtn) {
+      backtestRefreshBtn.addEventListener("click", () => {
+        if (ifBacktestRefreshTimer !== null) {
+          window.clearTimeout(ifBacktestRefreshTimer);
+          ifBacktestRefreshTimer = null;
+        }
+        triggerBacktestRefreshNow();
+      });
+    }
+    if (backtestHost) {
+      backtestHost.addEventListener("htmx:beforeRequest", () => setBacktestRefreshBusy(true));
+      backtestHost.addEventListener("htmx:afterRequest", () => setBacktestRefreshBusy(false));
+      backtestHost.addEventListener("htmx:responseError", () => setBacktestRefreshBusy(false));
+      backtestHost.addEventListener("htmx:sendError", () => setBacktestRefreshBusy(false));
+      backtestHost.addEventListener("htmx:timeout", () => setBacktestRefreshBusy(false));
+    }
+    if (forgeRunBtn) {
+      forgeRunBtn.addEventListener("click", triggerForgeRunNow);
+    }
+    if (forgeHost) {
+      forgeHost.addEventListener("htmx:beforeRequest", () => setForgeBusy(true));
+      forgeHost.addEventListener("htmx:afterRequest", () => setForgeBusy(false));
+      forgeHost.addEventListener("htmx:responseError", () => setForgeBusy(false));
+      forgeHost.addEventListener("htmx:sendError", () => setForgeBusy(false));
+      forgeHost.addEventListener("htmx:timeout", () => setForgeBusy(false));
+    }
+    setBacktestRefreshBusy(false);
+    setForgeBusy(false);
+    const rsiOverrideOnCtrl = b.querySelector("#if_rsi_sig_override_on");
+    if (rsiOverrideOnCtrl) {
+      rsiOverrideOnCtrl.addEventListener("change", syncRsiSignalOverridePrompt);
+      rsiOverrideOnCtrl.addEventListener("input", syncRsiSignalOverridePrompt);
+    }
+    const macdOverrideOnCtrl = b.querySelector("#if_macd_sig_override_on");
+    if (macdOverrideOnCtrl) {
+      macdOverrideOnCtrl.addEventListener("change", syncMacdSignalOverridePrompt);
+      macdOverrideOnCtrl.addEventListener("input", syncMacdSignalOverridePrompt);
+    }
+    const haOverrideOnCtrl = b.querySelector("#if_ha_sig_override_on");
+    if (haOverrideOnCtrl) {
+      haOverrideOnCtrl.addEventListener("change", syncHaSignalOverridePrompt);
+      haOverrideOnCtrl.addEventListener("input", syncHaSignalOverridePrompt);
+    }
+
+    function bindIndicatorSummarySync(selectors, syncFn) {
+      selectors.forEach((selector) => {
+        const ctrl = b.querySelector(selector);
+        if (!ctrl) return;
+        ctrl.addEventListener("change", syncFn);
+        ctrl.addEventListener("input", syncFn);
+      });
+      syncFn();
+    }
+    bindIndicatorSummarySync(
+      ["#if_roc_buy_cond", "#if_roc_sell_cond", "#if_roc_buy_thr", "#if_roc_sell_thr"],
+      syncRocSummary
+    );
+    bindIndicatorSummarySync(
+      ["#if_sar_buy_cond", "#if_sar_sell_cond", "#if_sar_step", "#if_sar_max"],
+      syncSarSummary
+    );
+    bindIndicatorSummarySync(
+      ["#if_bb_buy_cond", "#if_bb_sell_cond", "#if_bb_squeeze", "#if_bb_pctb_buy", "#if_bb_pctb_sell"],
+      syncBbSummary
+    );
+    const ichiPresetSel = b.querySelector("#if_ichi_preset");
+    const ichiPresetBtn = b.querySelector("#if_ichi_apply_preset");
+    if (ichiPresetSel) {
+      ichiPresetSel.addEventListener("change", syncIchiPresetDescription);
+      ichiPresetSel.addEventListener("input", syncIchiPresetDescription);
+    }
+    if (ichiPresetBtn) {
+      ichiPresetBtn.addEventListener("click", () => {
+        const key = String(ichiPresetSel && ichiPresetSel.value ? ichiPresetSel.value : "").trim();
+        if (!key) return;
+        applyIchiPreset(key);
+      });
+    }
+    syncIchiPresetDescription();
+    wireCollapsibleIchiMultiSelect("#if_ichi_buy_cond");
+    wireCollapsibleIchiMultiSelect("#if_ichi_sell_cond");
+    wireCollapsibleIchiMultiSelect("#if_ichi_block_cond");
+    bindIndicatorSummarySync(
+      [
+        "#if_ichi_buy_cond",
+        "#if_ichi_sell_cond",
+        "#if_ichi_block_cond",
+        "#if_ichi_buy_mode",
+        "#if_ichi_sell_mode",
+        "#if_ichi_block_mode",
+        "#if_ichi_tenkan",
+        "#if_ichi_kijun",
+        "#if_ichi_senkou_b",
+        "#if_ichi_displacement",
+        "#if_ichi_thickness",
+        "#if_ichi_kijun_tol",
+        "#if_ichi_delayed_lookback"
+      ],
+      syncIchiSummary
+    );
+    bindIndicatorSummarySync(
+      [
+        "#if_ttm_buy_cond",
+        "#if_ttm_sell_cond",
+        "#if_ttm_bb_len",
+        "#if_ttm_bb_mult",
+        "#if_ttm_kc_len",
+        "#if_ttm_kc_mult",
+        "#if_ttm_mom_len"
+      ],
+      syncTtmSummary
+    );
+
+    function bindExec(controlId, hiddenInput, type) {
+      const ctrl = b.querySelector(controlId);
+      if (!ctrl || !hiddenInput) return;
+      if (type === "checkbox") ctrl.checked = Boolean(hiddenInput.checked);
+      else ctrl.value = hiddenInput.value || "";
+      const sync = () => {
+        if (type === "checkbox") hiddenInput.checked = ctrl.checked;
+        else hiddenInput.value = ctrl.value;
+        updateParams();
+        refreshPreview();
+      };
+      ctrl.addEventListener("input", sync);
+      ctrl.addEventListener("change", sync);
+    }
+
+    bindExec("#if_exec_symbols", symbolsInput, "text");
+    bindExec("#if_exec_primary_symbol", primarySymbolInput, "text");
+    bindExec("#if_exec_inverse_symbol", inverseSymbolInput, "text");
+    bindExec("#if_exec_timeframe", timeframeInput, "text");
+    bindExec("#if_exec_sleep", sleepInput, "text");
+    bindExec("#if_exec_order_size", orderSizeInput, "text");
+    bindExec("#if_exec_trail_mode", trailModeInput, "text");
+    bindExec("#if_exec_buy_order_type", buyOrderTypeInput, "text");
+    bindExec("#if_exec_sell_order_type", sellOrderTypeInput, "text");
+    bindExec("#if_exec_trail_amount", trailAmountInput, "text");
+    bindExec("#if_exec_trail_mult", trailAtrMultInput, "text");
+    bindExec("#if_exec_stoploss_enabled", stoplossEnabledInput, "checkbox");
+    bindExec("#if_exec_include_extended_data", includeExtendedHoursDataInput, "checkbox");
+    bindExec("#if_exec_allow_extended_orders", allowExtendedHoursInput, "checkbox");
+    bindExec("#if_exec_allow_overnight", allowOvernightInput, "checkbox");
+    bindExec("#if_exec_target_gain", targetGainInput, "text");
+    bindExec("#if_exec_stop_loss", stopLossPctInput, "text");
+    bindExec("#if_exec_cap_enabled", capRuleEnabledInput, "checkbox");
+    bindExec("#if_exec_cap_mode", capModeInput, "text");
+    bindExec("#if_exec_cash_percent", capCashInput, "text");
+    bindExec("#if_exec_cash_source", capCashSourceInput, "text");
+    bindExec("#if_exec_cap_divisor", capDivisorInput, "text");
+
+    function syncTrailModePrompt() {
+      const modeCtrl = b.querySelector("#if_exec_trail_mode");
+      const buyCtrl = b.querySelector("#if_exec_buy_order_type");
+      const sellCtrl = b.querySelector("#if_exec_sell_order_type");
+      const amountWrap = b.querySelector("#if_exec_trail_amount_wrap");
+      const multWrap = b.querySelector("#if_exec_trail_mult_wrap");
+      const isTrailingType = (val) => {
+        const t = String(val || "").trim().toLowerCase();
+        return t === "local_trailing" || t === "trailing_stop";
+      };
+      let anyTrailing = true;
+      if (buyCtrl || sellCtrl) {
+        anyTrailing = false;
+        if (buyCtrl && isTrailingType(buyCtrl.value)) anyTrailing = true;
+        if (sellCtrl && isTrailingType(sellCtrl.value)) anyTrailing = true;
+      }
+      if (!anyTrailing) {
+        if (amountWrap) amountWrap.style.display = "none";
+        if (multWrap) multWrap.style.display = "none";
+        return;
+      }
+      const mode = String((modeCtrl && modeCtrl.value) || "fixed");
+      if (amountWrap) amountWrap.style.display = mode === "fixed" ? "" : "none";
+      if (multWrap) multWrap.style.display = mode === "atr" ? "" : "none";
+    }
+    function syncCapPrompt() {
+      const capEnabledCtrl = b.querySelector("#if_exec_cap_enabled");
+      const capModeCtrl = b.querySelector("#if_exec_cap_mode");
+      const capModeWrap = b.querySelector("#if_exec_cap_mode_wrap");
+      const capPctWrap = b.querySelector("#if_exec_cap_percent_wrap");
+      const capCashWrap = b.querySelector("#if_exec_cash_percent_wrap");
+      const capDivWrap = b.querySelector("#if_exec_cap_divisor_wrap");
+      const capCashCtrl = b.querySelector("#if_exec_cash_percent");
+      if (!capDivWrap && !capPctWrap && !capModeWrap && !capCashWrap) return;
+      if (!capEnabledCtrl) {
+        if (capModeWrap) capModeWrap.style.display = "none";
+        if (capPctWrap) capPctWrap.style.display = "none";
+        if (capCashWrap) capCashWrap.style.display = "none";
+        if (capDivWrap) capDivWrap.style.display = "none";
+        return;
+      }
+      const enabled = capEnabledCtrl.checked;
+      const mode = String((capModeCtrl && capModeCtrl.value) || "divisor_cash_slice");
+      if (capModeWrap) capModeWrap.style.display = enabled ? "" : "none";
+      if (capPctWrap) capPctWrap.style.display = enabled && mode === "percent" ? "" : "none";
+      if (capCashWrap) capCashWrap.style.display = enabled ? "" : "none";
+      if (capDivWrap) capDivWrap.style.display = enabled && mode !== "percent" ? "" : "none";
+      if (capCashCtrl) {
+        capCashCtrl.disabled = !enabled;
+        if (enabled) ensureCashPercentValue();
+      }
+      syncPerTickerCapRows();
+      b.querySelectorAll("#if_exec_cap_percent_rows input").forEach((input) => {
+        input.disabled = !(enabled && mode === "percent");
+      });
+      syncCapMathHint();
+    }
+    function currentExecTickers() {
+      const out = [];
+      const seen = new Set();
+      function add(raw) {
+        String(raw || "").split(",").forEach((part) => {
+          const sym = part.trim().toUpperCase();
+          if (!sym || seen.has(sym)) return;
+          seen.add(sym);
+          out.push(sym);
+        });
+      }
+      if (isEntangledTickers) {
+        add((b.querySelector("#if_exec_primary_symbol") || {}).value || "");
+        add((b.querySelector("#if_exec_inverse_symbol") || {}).value || "");
+      } else {
+        add((b.querySelector("#if_exec_symbols") || {}).value || "");
+      }
+      return out;
+    }
+    function readCapMap() {
+      try {
+        const obj = JSON.parse(String((capPercentInput && capPercentInput.value) || "{}"));
+        return obj && typeof obj === "object" && !Array.isArray(obj) ? obj : {};
+      } catch (_e) {
+        return {};
+      }
+    }
+    function writeCapMapFromRows() {
+      if (!capPercentInput) return;
+      const rows = b.querySelectorAll("[data-cap-symbol]");
+      const obj = {};
+      rows.forEach((row) => {
+        const sym = String(row.getAttribute("data-cap-symbol") || "").trim().toUpperCase();
+        const inp = row.querySelector("input");
+        const val = parseFloat(String((inp && inp.value) || "").trim());
+        if (sym && Number.isFinite(val) && val > 0) obj[sym] = val;
+      });
+      capPercentInput.value = JSON.stringify(obj);
+      updateParams();
+      refreshPreview();
+    }
+    function syncPerTickerCapRows() {
+      const wrap = b.querySelector("#if_exec_cap_percent_rows");
+      if (!wrap) return;
+      const existing = readCapMap();
+      const symbols = currentExecTickers();
+      wrap.innerHTML = "";
+      if (!symbols.length) {
+        wrap.innerHTML = "<div class='small'>Enter tickers first.</div>";
+        writeCapMapFromRows();
+        return;
+      }
+      symbols.forEach((sym) => {
+        const val = existing[sym] != null ? existing[sym] : 20;
+        const row = document.createElement("div");
+        row.setAttribute("data-cap-symbol", sym);
+        row.style.marginBottom = "6px";
+        row.innerHTML = `<label>${sym} Max %</label><input type="number" min="0" step="any" value="${String(val)}" />`;
+        const inp = row.querySelector("input");
+        inp.addEventListener("input", () => { writeCapMapFromRows(); syncCapMathHint(); });
+        inp.addEventListener("change", () => { writeCapMapFromRows(); syncCapMathHint(); });
+        wrap.appendChild(row);
+      });
+      writeCapMapFromRows();
+    }
+    function divisorCashPercent() {
+      const capDivCtrl = b.querySelector("#if_exec_cap_divisor");
+      const parsed = parseInt(String((capDivCtrl && capDivCtrl.value) || "").trim(), 10);
+      const divisor = Number.isFinite(parsed) ? Math.max(2, parsed) : 6;
+      return 100 / divisor;
+    }
+    function ensureCashPercentValue() {
+      const cashCtrl = b.querySelector("#if_exec_cash_percent");
+      if (!cashCtrl || !capCashInput) return;
+      const current = parseFloat(String(cashCtrl.value || "").trim());
+      if (Number.isFinite(current) && current > 0) return;
+      const hidden = parseFloat(String(capCashInput.value || "").trim());
+      const fallback = (Number.isFinite(hidden) && hidden > 0) ? hidden : divisorCashPercent();
+      cashCtrl.value = fallback.toFixed(2);
+      capCashInput.value = cashCtrl.value;
+      updateParams();
+    }
+    function cashTargetPercent() {
+      const cashCtrl = b.querySelector("#if_exec_cash_percent");
+      const parsed = parseFloat(String((cashCtrl && cashCtrl.value) || "").trim());
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+      return divisorCashPercent();
+    }
+    function syncCapMathHint() {
+      const capDivCtrl = b.querySelector("#if_exec_cap_divisor");
+      const capModeCtrl = b.querySelector("#if_exec_cap_mode");
+      const capMath = b.querySelector("#if_exec_cap_math");
+      if (!capDivCtrl || !capMath) return;
+      const cashPct = cashTargetPercent().toFixed(2);
+      if (String((capModeCtrl && capModeCtrl.value) || "divisor_cash_slice") === "percent") {
+        const count = currentExecTickers().length;
+        capMath.textContent = `Per-ticker cap mode: ${count || 0} ticker cap${count === 1 ? "" : "s"} configured from the ticker list. Cash target: ${cashPct}%.`;
+        return;
+      }
+      const parsed = parseInt(String(capDivCtrl.value || "").trim(), 10);
+      const divisor = Number.isFinite(parsed) ? Math.max(2, parsed) : 6;
+      const pct = (100 / divisor).toFixed(2);
+      capMath.textContent = `Current divisor slice: 1/${divisor} = ${pct}% per ticker. Cash target: ${cashPct}%.`;
+    }
+    const modeCtrl = b.querySelector("#if_exec_trail_mode");
+    if (modeCtrl) {
+      modeCtrl.addEventListener("change", syncTrailModePrompt);
+      modeCtrl.addEventListener("input", syncTrailModePrompt);
+    }
+    const buyCtrl = b.querySelector("#if_exec_buy_order_type");
+    if (buyCtrl) {
+      buyCtrl.addEventListener("change", syncTrailModePrompt);
+      buyCtrl.addEventListener("input", syncTrailModePrompt);
+    }
+    const sellCtrl = b.querySelector("#if_exec_sell_order_type");
+    if (sellCtrl) {
+      sellCtrl.addEventListener("change", syncTrailModePrompt);
+      sellCtrl.addEventListener("input", syncTrailModePrompt);
+    }
+    const capEnabledCtrl = b.querySelector("#if_exec_cap_enabled");
+    if (capEnabledCtrl) {
+      capEnabledCtrl.addEventListener("change", syncCapPrompt);
+      capEnabledCtrl.addEventListener("input", syncCapPrompt);
+    }
+    const capDivCtrl = b.querySelector("#if_exec_cap_divisor");
+    const capModeCtrl = b.querySelector("#if_exec_cap_mode");
+    if (capModeCtrl) {
+      capModeCtrl.addEventListener("change", syncCapPrompt);
+      capModeCtrl.addEventListener("input", syncCapPrompt);
+    }
+    if (capDivCtrl) {
+      capDivCtrl.addEventListener("change", syncCapMathHint);
+      capDivCtrl.addEventListener("input", syncCapMathHint);
+    }
+    const capCashCtrl = b.querySelector("#if_exec_cash_percent");
+    if (capCashCtrl) {
+      capCashCtrl.addEventListener("change", syncCapMathHint);
+      capCashCtrl.addEventListener("input", syncCapMathHint);
+    }
+    ["#if_exec_symbols", "#if_exec_primary_symbol", "#if_exec_inverse_symbol"].forEach((sel) => {
+      const ctrl = b.querySelector(sel);
+      if (!ctrl) return;
+      ctrl.addEventListener("input", () => { syncPerTickerCapRows(); syncCapMathHint(); });
+      ctrl.addEventListener("change", () => { syncPerTickerCapRows(); syncCapMathHint(); });
+    });
+
+    if (b.querySelector("#if_exec_timeframe") && timeframeInput) {
+      const tfCtrl = b.querySelector("#if_exec_timeframe");
+      tfCtrl.value = timeframeInput.value || (tfCtrl.options.length ? tfCtrl.options[0].value : "");
+    }
+    syncTrailModePrompt();
+    syncCapPrompt();
+    syncCapMathHint();
+    syncMaModeSummary();
+    syncMacdSummary();
+    syncHaSummary();
+    syncRsiOverrideTargets();
+    syncRsiSignalOverridePrompt();
+    syncMacdOverrideTargets();
+    syncMacdSignalOverridePrompt();
+
+    renderRules();
+    refreshPreview();
+  }
+
+  function updateParams() {
+    const data = {};
+    const inputs = paramFields.querySelectorAll("[data-param-key]");
+    inputs.forEach((input) => {
+      const key = input.dataset.paramKey;
+      const type = input.dataset.paramType;
+      const normalize = input.dataset.normalize;
+      const defVal = input.dataset.defaultValue;
+      let val;
+
+      if (type === "boolean") {
+        val = input.checked;
+      } else if (type === "number") {
+        const parsed = parseFloat(input.value);
+        if (!isNaN(parsed)) val = parsed;
+        else if (defVal !== undefined) val = parseFloat(defVal);
+      } else if (type === "list") {
+        const raw = String(input.value || "");
+        const items = raw
+          .split(",")
+          .map((v) => v.trim())
+          .filter(Boolean)
+          .map((v) => (normalize === "upper" ? v.toUpperCase() : v));
+        val = items;
+      } else if (type === "textarea") {
+        val = String(input.value || "");
+      } else {
+        val = String(input.value || "");
+      }
+
+      if (val !== undefined) data[key] = val;
+    });
+
+    paramsJson.value = JSON.stringify(data);
+  }
+
+  function applyExistingParams() {
+    if (!EXISTING_PARAMS || typeof EXISTING_PARAMS !== "object") {
+      return;
+    }
+    const inputs = paramFields.querySelectorAll("[data-param-key]");
+    inputs.forEach((input) => {
+      const key = input.dataset.paramKey;
+      if (!(key in EXISTING_PARAMS)) return;
+      const val = EXISTING_PARAMS[key];
+      const type = input.dataset.paramType;
+      if (type === "boolean") {
+        input.checked = Boolean(val);
+      } else if (type === "list") {
+        if (Array.isArray(val)) {
+          input.value = val.join(", ");
+        } else {
+          input.value = String(val || "");
+        }
+      } else {
+        input.value = String(val ?? "");
+      }
+    });
+  }
+
+  function renderStrategyForgeStandalone(def) {
+    const forge = document.createElement("div");
+    forge.className = "card";
+    forge.style.marginTop = "12px";
+    forge.innerHTML = `
+      <h3 style="margin:0 0 8px 0;">DreadFox Strategy Forge Backtest</h3>
+      <div class="row" style="align-items:flex-end; margin-bottom:8px;">
+        <div style="min-width:260px;">
+          <label class="small">Search Mode</label>
+          <div class="small">Open combo evolution: tests 2+ indicators and mutates settings.</div>
+        </div>
+        <div style="min-width:120px;">
+          <label class="small" for="generic_forge_trials">Max Evaluations</label>
+          <input id="generic_forge_trials" name="trials" type="number" min="1" max="5000" step="1" value="250" style="width:120px;" />
+        </div>
+        <div style="min-width:140px;">
+          <label class="small" for="generic_forge_min_trades">Min Trades</label>
+          <input id="generic_forge_min_trades" name="min_trades" type="number" min="1" max="10000" step="1" value="100" style="width:140px;" />
+        </div>
+        <button type="button" class="btn primary" id="generic_forge_run_btn">Run Forge</button>
+      </div>
+      <input type="hidden" id="generic_forge_symbols" name="symbols" value="" />
+      <input type="hidden" id="generic_forge_timeframe" name="timeframe" value="1h" />
+      <input type="hidden" id="generic_forge_broker_hint" name="broker_hint" value="robinhood" />
+      <input type="hidden" id="generic_forge_include_extended" name="include_extended_hours_data" value="false" />
+      <input type="hidden" id="generic_forge_nonce" name="_nonce" value="" />
+      <div id="generic_forge_table"
+           hx-get="/partials/strategy_forge_quick"
+           hx-include="#generic_forge_symbols, #generic_forge_timeframe, #generic_forge_broker_hint, #generic_forge_include_extended, #generic_forge_trials, #generic_forge_min_trades, #generic_forge_nonce"
+           hx-trigger="strategy-forge-run"
+           hx-swap="innerHTML"><div class="small">Ready.</div></div>
+    `;
+    paramFields.appendChild(forge);
+
+    function paramValue(keys, fallback = "") {
+      for (const key of keys) {
+        const input = paramFields.querySelector(`[data-param-key="${key}"]`);
+        if (!input) continue;
+        if (input.dataset.paramType === "boolean") return input.checked ? "true" : "false";
+        return String(input.value || fallback || "");
+      }
+      return String(fallback || "");
+    }
+
+    function syncForgeInputs() {
+      const symbolsEl = forge.querySelector("#generic_forge_symbols");
+      const timeframeEl = forge.querySelector("#generic_forge_timeframe");
+      const brokerEl = forge.querySelector("#generic_forge_broker_hint");
+      const extendedEl = forge.querySelector("#generic_forge_include_extended");
+      if (symbolsEl) symbolsEl.value = paramValue(["symbols", "symbol", "tickers", "ticker", "primary_symbol"], "");
+      if (timeframeEl) timeframeEl.value = paramValue(["timeframe", "interval"], "1h") || "1h";
+      if (brokerEl) {
+        const p = String((def && def.path) || "").toLowerCase();
+        if (p.endsWith("scripts/indicatorforge.crypto.robinhood.py")) {
+          brokerEl.value = "robinhood_crypto";
+        } else {
+          brokerEl.value = p.includes("schwab") ? "schwab" : "robinhood";
+        }
+      }
+      if (extendedEl) extendedEl.value = (brokerEl && brokerEl.value === "robinhood_crypto") ? "true" : paramValue(["include_extended_hours_data", "extended_hours", "allow_extended_hours"], "false");
+    }
+
+    function setBusy(isBusy) {
+      const btn = forge.querySelector("#generic_forge_run_btn");
+      if (!btn) return;
+      btn.disabled = Boolean(isBusy);
+      btn.textContent = isBusy ? "Forging..." : "Run Forge";
+    }
+
+    const runBtn = forge.querySelector("#generic_forge_run_btn");
+    const host = forge.querySelector("#generic_forge_table");
+    if (runBtn) {
+      runBtn.addEventListener("click", () => {
+        syncForgeInputs();
+        const nonce = forge.querySelector("#generic_forge_nonce");
+        if (nonce) nonce.value = String(Date.now());
+        if (host && window.htmx) window.htmx.trigger(host, "strategy-forge-run");
+      });
+    }
+    if (host) {
+      host.addEventListener("htmx:beforeRequest", () => setBusy(true));
+      host.addEventListener("htmx:afterRequest", () => setBusy(false));
+      host.addEventListener("htmx:responseError", () => setBusy(false));
+      host.addEventListener("htmx:sendError", () => setBusy(false));
+      host.addEventListener("htmx:timeout", () => setBusy(false));
+    }
+    paramFields.querySelectorAll("[data-param-key]").forEach((input) => {
+      input.addEventListener("input", syncForgeInputs);
+      input.addEventListener("change", syncForgeInputs);
+    });
+    syncForgeInputs();
+    setBusy(false);
+  }
+
+  function renderParams() {
+    paramFields.innerHTML = "";
+    const def = BASE_ALGO_DEFS[String(baseSelect.value)];
+    if (!def) {
+      renderBaseDescription("");
+      paramsJson.value = "{}";
+      return;
+    }
+    renderBaseDescription(def.description || "");
+    const params = def.params || [];
+    if (!params.length) {
+      const empty = document.createElement("div");
+      empty.className = "small";
+      empty.textContent = "No additional parameters required.";
+      paramFields.appendChild(empty);
+      paramsJson.value = "{}";
+      return;
+    }
+    params.forEach((p) => {
+      const wrap = buildInput(p);
+      paramFields.appendChild(wrap);
+    });
+    applyExistingParams();
+    if (isIndicatorForge(def)) {
+      renderIndicatorForgeBuilder();
+    } else {
+      renderStrategyForgeStandalone(def);
+    }
+    updateParams();
+  }
+
+  baseSelect.addEventListener("change", renderParams);
+  renderParams();
+</script>
+{% endblock %}

@@ -1,0 +1,749 @@
+Schemas
+AccountNumberHash{
+accountNumber	string
+hashValue	string
+}
+sessionstringEnum:
+[ NORMAL, AM, PM, SEAMLESS ]
+durationstringEnum:
+[ DAY, GOOD_TILL_CANCEL, FILL_OR_KILL, IMMEDIATE_OR_CANCEL, END_OF_WEEK, END_OF_MONTH, NEXT_END_OF_MONTH, UNKNOWN ]
+orderTypestringEnum:
+[ MARKET, LIMIT, STOP, STOP_LIMIT, TRAILING_STOP, CABINET, NON_MARKETABLE, MARKET_ON_CLOSE, EXERCISE, TRAILING_STOP_LIMIT, NET_DEBIT, NET_CREDIT, NET_ZERO, LIMIT_ON_CLOSE, UNKNOWN ]
+orderTypeRequeststring
+
+Same as orderType, but does not have UNKNOWN since this type is not allowed as an input
+Enum:
+[ MARKET, LIMIT, STOP, STOP_LIMIT, TRAILING_STOP, CABINET, NON_MARKETABLE, MARKET_ON_CLOSE, EXERCISE, TRAILING_STOP_LIMIT, NET_DEBIT, NET_CREDIT, NET_ZERO, LIMIT_ON_CLOSE ]
+complexOrderStrategyTypestringEnum:
+[ NONE, COVERED, VERTICAL, BACK_RATIO, CALENDAR, DIAGONAL, STRADDLE, STRANGLE, COLLAR_SYNTHETIC, BUTTERFLY, CONDOR, IRON_CONDOR, VERTICAL_ROLL, COLLAR_WITH_STOCK, DOUBLE_DIAGONAL, UNBALANCED_BUTTERFLY, UNBALANCED_CONDOR, UNBALANCED_IRON_CONDOR, UNBALANCED_VERTICAL_ROLL, MUTUAL_FUND_SWAP, CUSTOM ]
+requestedDestinationstringEnum:
+[ INET, ECN_ARCA, CBOE, AMEX, PHLX, ISE, BOX, NYSE, NASDAQ, BATS, C2, AUTO ]
+stopPriceLinkBasisstringEnum:
+[ MANUAL, BASE, TRIGGER, LAST, BID, ASK, ASK_BID, MARK, AVERAGE ]
+stopPriceLinkTypestringEnum:
+[ VALUE, PERCENT, TICK ]
+stopPriceOffsetnumber($double)
+stopTypestringEnum:
+[ STANDARD, BID, ASK, LAST, MARK ]
+priceLinkBasisstringEnum:
+[ MANUAL, BASE, TRIGGER, LAST, BID, ASK, ASK_BID, MARK, AVERAGE ]
+priceLinkTypestringEnum:
+[ VALUE, PERCENT, TICK ]
+taxLotMethodstringEnum:
+[ FIFO, LIFO, HIGH_COST, LOW_COST, AVERAGE_COST, SPECIFIC_LOT, LOSS_HARVESTER ]
+specialInstructionstringEnum:
+[ ALL_OR_NONE, DO_NOT_REDUCE, ALL_OR_NONE_DO_NOT_REDUCE ]
+orderStrategyTypestringEnum:
+[ SINGLE, CANCEL, RECALL, PAIR, FLATTEN, TWO_DAY_SWAP, BLAST_ALL, OCO, TRIGGER ]
+statusstringEnum:
+[ AWAITING_PARENT_ORDER, AWAITING_CONDITION, AWAITING_STOP_CONDITION, AWAITING_MANUAL_REVIEW, ACCEPTED, AWAITING_UR_OUT, PENDING_ACTIVATION, QUEUED, WORKING, REJECTED, PENDING_CANCEL, CANCELED, PENDING_REPLACE, REPLACED, FILLED, EXPIRED, NEW, AWAITING_RELEASE_TIME, PENDING_ACKNOWLEDGEMENT, PENDING_RECALL, UNKNOWN ]
+amountIndicatorstringEnum:
+[ DOLLARS, SHARES, ALL_SHARES, PERCENTAGE, UNKNOWN ]
+settlementInstructionstringEnum:
+[ REGULAR, CASH, NEXT_DAY, UNKNOWN ]
+OrderStrategy{
+accountNumber	string
+advancedOrderType	stringEnum:
+[ NONE, OTO, OCO, OTOCO, OT2OCO, OT3OCO, BLAST_ALL, OTA, PAIR ]
+closeTime	string($date-time)
+enteredTime	string($date-time)
+orderBalance	OrderBalance{
+orderValue	number($double)
+projectedAvailableFund	number($double)
+projectedBuyingPower	number($double)
+projectedCommission	number($double)
+}
+orderStrategyType	orderStrategyTypestringEnum:
+[ SINGLE, CANCEL, RECALL, PAIR, FLATTEN, TWO_DAY_SWAP, BLAST_ALL, OCO, TRIGGER ]
+orderVersion	number
+session	sessionstringEnum:
+Array [ 4 ]
+status	apiOrderStatusstringEnum:
+[ AWAITING_PARENT_ORDER, AWAITING_CONDITION, AWAITING_STOP_CONDITION, AWAITING_MANUAL_REVIEW, ACCEPTED, AWAITING_UR_OUT, PENDING_ACTIVATION, QUEUED, WORKING, REJECTED, PENDING_CANCEL, CANCELED, PENDING_REPLACE, REPLACED, FILLED, EXPIRED, NEW, AWAITING_RELEASE_TIME, PENDING_ACKNOWLEDGEMENT, PENDING_RECALL, UNKNOWN ]
+allOrNone	boolean
+discretionary	boolean
+duration	durationstringEnum:
+[ DAY, GOOD_TILL_CANCEL, FILL_OR_KILL, IMMEDIATE_OR_CANCEL, END_OF_WEEK, END_OF_MONTH, NEXT_END_OF_MONTH, UNKNOWN ]
+filledQuantity	number($double)
+orderType	orderTypestringEnum:
+[ MARKET, LIMIT, STOP, STOP_LIMIT, TRAILING_STOP, CABINET, NON_MARKETABLE, MARKET_ON_CLOSE, EXERCISE, TRAILING_STOP_LIMIT, NET_DEBIT, NET_CREDIT, NET_ZERO, LIMIT_ON_CLOSE, UNKNOWN ]
+orderValue	number($double)
+price	number($double)
+quantity	number($double)
+remainingQuantity	number($double)
+sellNonMarginableFirst	boolean
+settlementInstruction	settlementInstructionstringEnum:
+[ REGULAR, CASH, NEXT_DAY, UNKNOWN ]
+strategy	complexOrderStrategyTypestringEnum:
+[ NONE, COVERED, VERTICAL, BACK_RATIO, CALENDAR, DIAGONAL, STRADDLE, STRANGLE, COLLAR_SYNTHETIC, BUTTERFLY, CONDOR, IRON_CONDOR, VERTICAL_ROLL, COLLAR_WITH_STOCK, DOUBLE_DIAGONAL, UNBALANCED_BUTTERFLY, UNBALANCED_CONDOR, UNBALANCED_IRON_CONDOR, UNBALANCED_VERTICAL_ROLL, MUTUAL_FUND_SWAP, CUSTOM ]
+amountIndicator	amountIndicatorstringEnum:
+[ DOLLARS, SHARES, ALL_SHARES, PERCENTAGE, UNKNOWN ]
+orderLegs	[
+xml: OrderedMap { "name": "orderLeg", "wrapped": true }
+OrderLeg{...}]
+}
+OrderLeg{
+askPrice	number($double)
+bidPrice	number($double)
+lastPrice	number($double)
+markPrice	number($double)
+projectedCommission	number($double)
+quantity	number($double)
+finalSymbol	string
+legId	number($long)
+assetType	assetTypestringEnum:
+[ EQUITY, MUTUAL_FUND, OPTION, FUTURE, FOREX, INDEX, CASH_EQUIVALENT, FIXED_INCOME, PRODUCT, CURRENCY, COLLECTIVE_INVESTMENT ]
+instruction	instructionstringEnum:
+[ BUY, SELL, BUY_TO_COVER, SELL_SHORT, BUY_TO_OPEN, BUY_TO_CLOSE, SELL_TO_OPEN, SELL_TO_CLOSE, EXCHANGE, SELL_SHORT_EXEMPT ]
+}
+OrderBalance{
+orderValue	number($double)
+projectedAvailableFund	number($double)
+projectedBuyingPower	number($double)
+projectedCommission	number($double)
+}
+OrderValidationResult{
+alerts	[OrderValidationDetail{
+validationRuleName	string
+message	string
+activityMessage	string
+originalSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+overrideName	string
+overrideSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+}]
+accepts	[OrderValidationDetail{
+validationRuleName	string
+message	string
+activityMessage	string
+originalSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+overrideName	string
+overrideSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+}]
+rejects	[OrderValidationDetail{
+validationRuleName	string
+message	string
+activityMessage	string
+originalSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+overrideName	string
+overrideSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+}]
+reviews	[OrderValidationDetail{
+validationRuleName	string
+message	string
+activityMessage	string
+originalSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+overrideName	string
+overrideSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+}]
+warns	[OrderValidationDetail{
+validationRuleName	string
+message	string
+activityMessage	string
+originalSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+overrideName	string
+overrideSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+}]
+}
+OrderValidationDetail{
+validationRuleName	string
+message	string
+activityMessage	string
+originalSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+overrideName	string
+overrideSeverity	APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+}
+APIRuleActionstringEnum:
+[ ACCEPT, ALERT, REJECT, REVIEW, UNKNOWN ]
+CommissionAndFee
+Commission
+CommissionLeg
+CommissionValue
+Fees
+FeeLeg
+FeeValue
+FeeType
+Account{
+securitiesAccount	SecuritiesAccount{
+oneOf ->
+MarginAccount{
+type	stringEnum:
+[ CASH, MARGIN ]
+accountNumber	string
+roundTrips	integer($int32)
+isDayTrader	boolean
+default: false
+isClosingOnlyRestricted	boolean
+default: false
+pfcbFlag	boolean
+default: false
+positions	[Position{
+shortQuantity	number($double)
+averagePrice	number($double)
+currentDayProfitLoss	number($double)
+currentDayProfitLossPercentage	number($double)
+longQuantity	number($double)
+settledLongQuantity	number($double)
+settledShortQuantity	number($double)
+agedQuantity	number($double)
+instrument	AccountsInstrument{
+oneOf ->
+AccountCashEquivalent{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+type	stringEnum:
+[ SWEEP_VEHICLE, SAVINGS, MONEY_MARKET_FUND, UNKNOWN ]
+}
+AccountEquity{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+}
+AccountFixedIncome{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+maturityDate	string($date-time)
+factor	number($double)
+variableRate	number($double)
+}
+AccountMutualFund{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+}
+AccountOption{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+optionDeliverables	[
+xml: OrderedMap { "name": "optionDeliverables", "wrapped": true }
+AccountAPIOptionDeliverable{
+symbol	string($int64)
+deliverableUnits	number($double)
+apiCurrencyType	stringEnum:
+[ USD, CAD, EUR, JPY ]
+assetType	assetTypestringEnum:
+[ EQUITY, MUTUAL_FUND, OPTION, FUTURE, FOREX, INDEX, CASH_EQUIVALENT, FIXED_INCOME, PRODUCT, CURRENCY, COLLECTIVE_INVESTMENT ]
+}]
+putCall	stringEnum:
+[ PUT, CALL, UNKNOWN ]
+optionMultiplier	integer($int32)
+type	stringEnum:
+[ VANILLA, BINARY, BARRIER, UNKNOWN ]
+underlyingSymbol	string
+}
+}
+marketValue	number($double)
+maintenanceRequirement	number($double)
+averageLongPrice	number($double)
+averageShortPrice	number($double)
+taxLotAverageLongPrice	number($double)
+taxLotAverageShortPrice	number($double)
+longOpenProfitLoss	number($double)
+shortOpenProfitLoss	number($double)
+previousSessionLongQuantity	number($double)
+previousSessionShortQuantity	number($double)
+currentDayCost	number($double)
+}]
+initialBalances	MarginInitialBalance{
+accruedInterest	number($double)
+availableFundsNonMarginableTrade	number($double)
+bondValue	number($double)
+buyingPower	number($double)
+cashBalance	number($double)
+cashAvailableForTrading	number($double)
+cashReceipts	number($double)
+dayTradingBuyingPower	number($double)
+dayTradingBuyingPowerCall	number($double)
+dayTradingEquityCall	number($double)
+equity	number($double)
+equityPercentage	number($double)
+liquidationValue	number($double)
+longMarginValue	number($double)
+longOptionMarketValue	number($double)
+longStockValue	number($double)
+maintenanceCall	number($double)
+maintenanceRequirement	number($double)
+margin	number($double)
+marginEquity	number($double)
+moneyMarketFund	number($double)
+mutualFundValue	number($double)
+regTCall	number($double)
+shortMarginValue	number($double)
+shortOptionMarketValue	number($double)
+shortStockValue	number($double)
+totalCash	number($double)
+isInCall	number($double)
+unsettledCash	number($double)
+pendingDeposits	number($double)
+marginBalance	number($double)
+shortBalance	number($double)
+accountValue	number($double)
+}
+currentBalances	MarginBalance{
+availableFunds	number($double)
+availableFundsNonMarginableTrade	number($double)
+buyingPower	number($double)
+buyingPowerNonMarginableTrade	number($double)
+dayTradingBuyingPower	number($double)
+dayTradingBuyingPowerCall	number($double)
+equity	number($double)
+equityPercentage	number($double)
+longMarginValue	number($double)
+maintenanceCall	number($double)
+maintenanceRequirement	number($double)
+marginBalance	number($double)
+regTCall	number($double)
+shortBalance	number($double)
+shortMarginValue	number($double)
+sma	number($double)
+isInCall	number($double)
+stockBuyingPower	number($double)
+optionBuyingPower	number($double)
+}
+projectedBalances	MarginBalance{
+availableFunds	number($double)
+availableFundsNonMarginableTrade	number($double)
+buyingPower	number($double)
+buyingPowerNonMarginableTrade	number($double)
+dayTradingBuyingPower	number($double)
+dayTradingBuyingPowerCall	number($double)
+equity	number($double)
+equityPercentage	number($double)
+longMarginValue	number($double)
+maintenanceCall	number($double)
+maintenanceRequirement	number($double)
+marginBalance	number($double)
+regTCall	number($double)
+shortBalance	number($double)
+shortMarginValue	number($double)
+sma	number($double)
+isInCall	number($double)
+stockBuyingPower	number($double)
+optionBuyingPower	number($double)
+}
+}
+CashAccount{...}
+}
+}
+DateParam
+Order{
+session	sessionstringEnum:
+[ NORMAL, AM, PM, SEAMLESS ]
+duration	durationstringEnum:
+[ DAY, GOOD_TILL_CANCEL, FILL_OR_KILL, IMMEDIATE_OR_CANCEL, END_OF_WEEK, END_OF_MONTH, NEXT_END_OF_MONTH, UNKNOWN ]
+orderType	orderTypestringEnum:
+[ MARKET, LIMIT, STOP, STOP_LIMIT, TRAILING_STOP, CABINET, NON_MARKETABLE, MARKET_ON_CLOSE, EXERCISE, TRAILING_STOP_LIMIT, NET_DEBIT, NET_CREDIT, NET_ZERO, LIMIT_ON_CLOSE, UNKNOWN ]
+cancelTime	string($date-time)
+complexOrderStrategyType	complexOrderStrategyTypestringEnum:
+[ NONE, COVERED, VERTICAL, BACK_RATIO, CALENDAR, DIAGONAL, STRADDLE, STRANGLE, COLLAR_SYNTHETIC, BUTTERFLY, CONDOR, IRON_CONDOR, VERTICAL_ROLL, COLLAR_WITH_STOCK, DOUBLE_DIAGONAL, UNBALANCED_BUTTERFLY, UNBALANCED_CONDOR, UNBALANCED_IRON_CONDOR, UNBALANCED_VERTICAL_ROLL, MUTUAL_FUND_SWAP, CUSTOM ]
+quantity	number($double)
+filledQuantity	number($double)
+remainingQuantity	number($double)
+requestedDestination	requestedDestinationstringEnum:
+[ INET, ECN_ARCA, CBOE, AMEX, PHLX, ISE, BOX, NYSE, NASDAQ, BATS, C2, AUTO ]
+destinationLinkName	string
+releaseTime	string($date-time)
+stopPrice	number($double)
+stopPriceLinkBasis	stopPriceLinkBasisstringEnum:
+[ MANUAL, BASE, TRIGGER, LAST, BID, ASK, ASK_BID, MARK, AVERAGE ]
+stopPriceLinkType	stopPriceLinkTypestringEnum:
+[ VALUE, PERCENT, TICK ]
+stopPriceOffset	number($double)
+stopType	stopTypestringEnum:
+[ STANDARD, BID, ASK, LAST, MARK ]
+priceLinkBasis	priceLinkBasisstringEnum:
+[ MANUAL, BASE, TRIGGER, LAST, BID, ASK, ASK_BID, MARK, AVERAGE ]
+priceLinkType	priceLinkTypestringEnum:
+[ VALUE, PERCENT, TICK ]
+price	number($double)
+taxLotMethod	taxLotMethodstringEnum:
+[ FIFO, LIFO, HIGH_COST, LOW_COST, AVERAGE_COST, SPECIFIC_LOT, LOSS_HARVESTER ]
+orderLegCollection	[
+xml: OrderedMap { "name": "orderLegCollection", "wrapped": true }
+OrderLegCollection{
+orderLegType	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+legId	integer($int64)
+instrument	AccountsInstrument{
+oneOf ->
+AccountCashEquivalent{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+type	stringEnum:
+[ SWEEP_VEHICLE, SAVINGS, MONEY_MARKET_FUND, UNKNOWN ]
+}
+AccountEquity{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+}
+AccountFixedIncome{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+maturityDate	string($date-time)
+factor	number($double)
+variableRate	number($double)
+}
+AccountMutualFund{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+}
+AccountOption{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+optionDeliverables	[
+xml: OrderedMap { "name": "optionDeliverables", "wrapped": true }
+AccountAPIOptionDeliverable{
+symbol	string($int64)
+deliverableUnits	number($double)
+apiCurrencyType	stringEnum:
+[ USD, CAD, EUR, JPY ]
+assetType	assetTypestringEnum:
+[ EQUITY, MUTUAL_FUND, OPTION, FUTURE, FOREX, INDEX, CASH_EQUIVALENT, FIXED_INCOME, PRODUCT, CURRENCY, COLLECTIVE_INVESTMENT ]
+}]
+putCall	stringEnum:
+[ PUT, CALL, UNKNOWN ]
+optionMultiplier	integer($int32)
+type	stringEnum:
+[ VANILLA, BINARY, BARRIER, UNKNOWN ]
+underlyingSymbol	string
+}
+}
+instruction	instructionstringEnum:
+[ BUY, SELL, BUY_TO_COVER, SELL_SHORT, BUY_TO_OPEN, BUY_TO_CLOSE, SELL_TO_OPEN, SELL_TO_CLOSE, EXCHANGE, SELL_SHORT_EXEMPT ]
+positionEffect	stringEnum:
+[ OPENING, CLOSING, AUTOMATIC ]
+quantity	number($double)
+quantityType	stringEnum:
+[ ALL_SHARES, DOLLARS, SHARES ]
+divCapGains	stringEnum:
+[ REINVEST, PAYOUT ]
+toSymbol	string
+}]
+activationPrice	number($double)
+specialInstruction	specialInstructionstringEnum:
+[ ALL_OR_NONE, DO_NOT_REDUCE, ALL_OR_NONE_DO_NOT_REDUCE ]
+orderStrategyType	orderStrategyTypestringEnum:
+[ SINGLE, CANCEL, RECALL, PAIR, FLATTEN, TWO_DAY_SWAP, BLAST_ALL, OCO, TRIGGER ]
+orderId	integer($int64)
+cancelable	boolean
+default: false
+editable	boolean
+default: false
+status	statusstringEnum:
+[ AWAITING_PARENT_ORDER, AWAITING_CONDITION, AWAITING_STOP_CONDITION, AWAITING_MANUAL_REVIEW, ACCEPTED, AWAITING_UR_OUT, PENDING_ACTIVATION, QUEUED, WORKING, REJECTED, PENDING_CANCEL, CANCELED, PENDING_REPLACE, REPLACED, FILLED, EXPIRED, NEW, AWAITING_RELEASE_TIME, PENDING_ACKNOWLEDGEMENT, PENDING_RECALL, UNKNOWN ]
+enteredTime	string($date-time)
+closeTime	string($date-time)
+tag	string
+accountNumber	integer($int64)
+orderActivityCollection	[
+xml: OrderedMap { "name": "orderActivity", "wrapped": true }
+OrderActivity{...}]
+replacingOrderCollection	[
+xml: OrderedMap { "name": "replacingOrder", "wrapped": true }
+{
+}]
+childOrderStrategies	[
+xml: OrderedMap { "name": "childOrder", "wrapped": true }
+{
+}]
+statusDescription	string
+}
+OrderRequest{
+session	sessionstringEnum:
+[ NORMAL, AM, PM, SEAMLESS ]
+duration	durationstringEnum:
+[ DAY, GOOD_TILL_CANCEL, FILL_OR_KILL, IMMEDIATE_OR_CANCEL, END_OF_WEEK, END_OF_MONTH, NEXT_END_OF_MONTH, UNKNOWN ]
+orderType	orderTypeRequeststring
+
+Same as orderType, but does not have UNKNOWN since this type is not allowed as an input
+Enum:
+[ MARKET, LIMIT, STOP, STOP_LIMIT, TRAILING_STOP, CABINET, NON_MARKETABLE, MARKET_ON_CLOSE, EXERCISE, TRAILING_STOP_LIMIT, NET_DEBIT, NET_CREDIT, NET_ZERO, LIMIT_ON_CLOSE ]
+cancelTime	string($date-time)
+complexOrderStrategyType	complexOrderStrategyTypestringEnum:
+[ NONE, COVERED, VERTICAL, BACK_RATIO, CALENDAR, DIAGONAL, STRADDLE, STRANGLE, COLLAR_SYNTHETIC, BUTTERFLY, CONDOR, IRON_CONDOR, VERTICAL_ROLL, COLLAR_WITH_STOCK, DOUBLE_DIAGONAL, UNBALANCED_BUTTERFLY, UNBALANCED_CONDOR, UNBALANCED_IRON_CONDOR, UNBALANCED_VERTICAL_ROLL, MUTUAL_FUND_SWAP, CUSTOM ]
+quantity	number($double)
+filledQuantity	number($double)
+remainingQuantity	number($double)
+destinationLinkName	string
+releaseTime	string($date-time)
+stopPrice	number($double)
+stopPriceLinkBasis	stopPriceLinkBasisstringEnum:
+[ MANUAL, BASE, TRIGGER, LAST, BID, ASK, ASK_BID, MARK, AVERAGE ]
+stopPriceLinkType	stopPriceLinkTypestringEnum:
+[ VALUE, PERCENT, TICK ]
+stopPriceOffset	number($double)
+stopType	stopTypestringEnum:
+[ STANDARD, BID, ASK, LAST, MARK ]
+priceLinkBasis	priceLinkBasisstringEnum:
+[ MANUAL, BASE, TRIGGER, LAST, BID, ASK, ASK_BID, MARK, AVERAGE ]
+priceLinkType	priceLinkTypestringEnum:
+[ VALUE, PERCENT, TICK ]
+price	number($double)
+taxLotMethod	taxLotMethodstringEnum:
+[ FIFO, LIFO, HIGH_COST, LOW_COST, AVERAGE_COST, SPECIFIC_LOT, LOSS_HARVESTER ]
+orderLegCollection	[
+xml: OrderedMap { "name": "orderLegCollection", "wrapped": true }
+OrderLegCollection{
+orderLegType	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+legId	integer($int64)
+instrument	AccountsInstrument{
+oneOf ->
+AccountCashEquivalent{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+type	stringEnum:
+[ SWEEP_VEHICLE, SAVINGS, MONEY_MARKET_FUND, UNKNOWN ]
+}
+AccountEquity{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+}
+AccountFixedIncome{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+maturityDate	string($date-time)
+factor	number($double)
+variableRate	number($double)
+}
+AccountMutualFund{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+}
+AccountOption{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+optionDeliverables	[
+xml: OrderedMap { "name": "optionDeliverables", "wrapped": true }
+AccountAPIOptionDeliverable{
+symbol	string($int64)
+deliverableUnits	number($double)
+apiCurrencyType	stringEnum:
+[ USD, CAD, EUR, JPY ]
+assetType	assetTypestringEnum:
+[ EQUITY, MUTUAL_FUND, OPTION, FUTURE, FOREX, INDEX, CASH_EQUIVALENT, FIXED_INCOME, PRODUCT, CURRENCY, COLLECTIVE_INVESTMENT ]
+}]
+putCall	stringEnum:
+[ PUT, CALL, UNKNOWN ]
+optionMultiplier	integer($int32)
+type	stringEnum:
+[ VANILLA, BINARY, BARRIER, UNKNOWN ]
+underlyingSymbol	string
+}
+}
+instruction	instructionstringEnum:
+[ BUY, SELL, BUY_TO_COVER, SELL_SHORT, BUY_TO_OPEN, BUY_TO_CLOSE, SELL_TO_OPEN, SELL_TO_CLOSE, EXCHANGE, SELL_SHORT_EXEMPT ]
+positionEffect	stringEnum:
+[ OPENING, CLOSING, AUTOMATIC ]
+quantity	number($double)
+quantityType	stringEnum:
+[ ALL_SHARES, DOLLARS, SHARES ]
+divCapGains	stringEnum:
+[ REINVEST, PAYOUT ]
+toSymbol	string
+}]
+activationPrice	number($double)
+specialInstruction	specialInstructionstringEnum:
+Array [ 3 ]
+orderStrategyType	orderStrategyTypestringEnum:
+[ SINGLE, CANCEL, RECALL, PAIR, FLATTEN, TWO_DAY_SWAP, BLAST_ALL, OCO, TRIGGER ]
+orderId	integer($int64)
+cancelable	boolean
+default: false
+editable	boolean
+default: false
+status	statusstringEnum:
+[ AWAITING_PARENT_ORDER, AWAITING_CONDITION, AWAITING_STOP_CONDITION, AWAITING_MANUAL_REVIEW, ACCEPTED, AWAITING_UR_OUT, PENDING_ACTIVATION, QUEUED, WORKING, REJECTED, PENDING_CANCEL, CANCELED, PENDING_REPLACE, REPLACED, FILLED, EXPIRED, NEW, AWAITING_RELEASE_TIME, PENDING_ACKNOWLEDGEMENT, PENDING_RECALL, UNKNOWN ]
+enteredTime	string($date-time)
+closeTime	string($date-time)
+accountNumber	integer($int64)
+orderActivityCollection	[
+xml: OrderedMap { "name": "orderActivity", "wrapped": true }
+OrderActivity{...}]
+replacingOrderCollection	[
+xml: OrderedMap { "name": "replacingOrder", "wrapped": true }
+{
+}]
+childOrderStrategies	[
+xml: OrderedMap { "name": "childOrder", "wrapped": true }
+{
+}]
+statusDescription	string
+}
+PreviewOrder
+OrderActivity
+ExecutionLeg
+Position{
+shortQuantity	number($double)
+averagePrice	number($double)
+currentDayProfitLoss	number($double)
+currentDayProfitLossPercentage	number($double)
+longQuantity	number($double)
+settledLongQuantity	number($double)
+settledShortQuantity	number($double)
+agedQuantity	number($double)
+instrument	AccountsInstrument{
+oneOf ->
+AccountCashEquivalent{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+type	stringEnum:
+[ SWEEP_VEHICLE, SAVINGS, MONEY_MARKET_FUND, UNKNOWN ]
+}
+AccountEquity{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+}
+AccountFixedIncome{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+maturityDate	string($date-time)
+factor	number($double)
+variableRate	number($double)
+}
+AccountMutualFund{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+}
+AccountOption{
+assetType*	stringEnum:
+[ EQUITY, OPTION, INDEX, MUTUAL_FUND, CASH_EQUIVALENT, FIXED_INCOME, CURRENCY, COLLECTIVE_INVESTMENT ]
+cusip	string
+symbol	string
+description	string
+instrumentId	integer($int64)
+netChange	number($double)
+optionDeliverables	[
+xml: OrderedMap { "name": "optionDeliverables", "wrapped": true }
+AccountAPIOptionDeliverable{
+symbol	string($int64)
+deliverableUnits	number($double)
+apiCurrencyType	stringEnum:
+[ USD, CAD, EUR, JPY ]
+assetType	assetTypestringEnum:
+[ EQUITY, MUTUAL_FUND, OPTION, FUTURE, FOREX, INDEX, CASH_EQUIVALENT, FIXED_INCOME, PRODUCT, CURRENCY, COLLECTIVE_INVESTMENT ]
+}]
+putCall	stringEnum:
+[ PUT, CALL, UNKNOWN ]
+optionMultiplier	integer($int32)
+type	stringEnum:
+[ VANILLA, BINARY, BARRIER, UNKNOWN ]
+underlyingSymbol	string
+}
+}
+marketValue	number($double)
+maintenanceRequirement	number($double)
+averageLongPrice	number($double)
+averageShortPrice	number($double)
+taxLotAverageLongPrice	number($double)
+taxLotAverageShortPrice	number($double)
+longOpenProfitLoss	number($double)
+shortOpenProfitLoss	number($double)
+previousSessionLongQuantity	number($double)
+previousSessionShortQuantity	number($double)
+currentDayCost	number($double)
+}

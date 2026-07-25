@@ -1,0 +1,111 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="grid">
+  <div class="card" style="grid-column: span 12;">
+    <div class="row" style="justify-content:space-between; align-items:center;">
+      <div>
+        <h3>Portfolio Overview</h3>
+        <div class="small">Per-broker bubbles. Auto-refreshes every 20s.</div>
+      </div>
+      <div style="min-width:140px;">
+        <label class="small" for="pl_mode_select" style="margin-bottom:6px;">P/L Display</label>
+        <select id="pl_mode_select" style="width:140px;">
+          <option value="dollar" selected>Dollar</option>
+          <option value="percent">Percent</option>
+        </select>
+      </div>
+    </div>
+    <div id="portfolio_bubbles"
+         hx-get="/partials/portfolio_bubbles"
+         hx-vals='js:{pl_mode: (document.getElementById("pl_mode_select") && document.getElementById("pl_mode_select").value) || "dollar"}'
+         hx-trigger="load, every 20s, change from:#pl_mode_select"
+         hx-swap="innerHTML">
+      Loading…
+    </div>
+  </div>
+
+  <div class="card" style="grid-column: span 12;">
+    <div class="row" style="justify-content:space-between; align-items:flex-end;">
+      <div>
+        <h3>Stellated Position Solid</h3>
+        <div class="small">Top weighted tickers are mapped to stellated spike tips on the selected face tier (platonic up to 20, geodesic above 20).</div>
+      </div>
+      <div class="row">
+        <div style="min-width:180px;">
+          <label class="small" for="positions_solid_scale_mode" style="margin-bottom:6px;">Spike Depth</label>
+          <select id="positions_solid_scale_mode" style="width:180px;">
+            <option value="weight" selected>Portfolio weight</option>
+            <option value="gain_loss">Gain/Loss %</option>
+          </select>
+        </div>
+        <div style="min-width:170px;">
+          <label class="small" for="positions_solid_face_select" style="margin-bottom:6px;">Face Slots</label>
+          <select id="positions_solid_face_select" style="width:170px;">
+            <option value="auto" selected>Auto (from holdings)</option>
+            <option value="4">4</option>
+            <option value="6">6</option>
+            <option value="8">8</option>
+            <option value="12">12</option>
+            <option value="20">20</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div style="min-width:130px;">
+          <label class="small" for="positions_solid_face_custom_input" style="margin-bottom:6px;">Custom Faces</label>
+          <input id="positions_solid_face_custom_input" type="number" min="4" step="1" value="40" style="width:130px;" />
+        </div>
+        <button id="positions_solid_refresh" class="btn" type="button">Refresh</button>
+        <button id="positions_solid_reset_order" class="btn" type="button">Reset Ticker Order</button>
+      </div>
+    </div>
+
+    <div class="portfolio-solid-layout">
+      <div class="portfolio-solid-stage-wrap">
+        <canvas id="positions_solid_canvas" class="portfolio-solid-canvas" aria-label="Stellated holdings solid"></canvas>
+      </div>
+      <div class="portfolio-solid-legend">
+        <div class="small" id="positions_solid_summary">Loading positions…</div>
+        <div id="positions_solid_toplist"></div>
+      </div>
+    </div>
+
+    <div class="small" id="positions_solid_status" style="margin-top:8px;">Fetching live portfolio holdings…</div>
+    <div class="small" id="positions_solid_scale_hint" style="margin-top:6px;">Use the up/down controls in the ticker list to assign tickers to different spike points. Spike depth scales by relative portfolio weight. For more than 20 faces, select Custom and enter a larger face target.</div>
+  </div>
+
+  <div class="card" style="grid-column: span 8;">
+    <h3>Live Runs</h3>
+    <div class="small">Auto-refreshes every 2s.</div>
+    <div hx-get="/partials/live_runs" hx-trigger="load, every 2s" hx-swap="innerHTML">
+      Loading…
+    </div>
+  </div>
+
+  <div class="card" style="grid-column: span 4;">
+    <h3>Quick Actions</h3>
+    <div class="row">
+      <a class="btn primary" href="/algorithms/new">Create algorithm</a>
+      <a class="btn" href="/runs">View runs</a>
+      <a class="btn" href="/broker">Connect Schwab</a>
+      <form method="post" action="/runs/stop_all" onsubmit="return confirm('Stop all running cryptids?');">
+        <button class="btn danger" type="submit">Stop All Cryptids</button>
+      </form>
+    </div>
+    <div style="margin-top:12px">
+      <div class="small">This prototype runs sample scripts. Swap in Dreadfox scripts later.</div>
+    </div>
+  </div>
+
+  <div class="card" style="grid-column: span 12;">
+    <h3>Saved Algorithms</h3>
+    <div hx-get="/partials/algorithms_table" hx-trigger="load" hx-swap="innerHTML">Loading…</div>
+  </div>
+
+  <div class="card" style="grid-column: span 12;">
+    <h3>Broker Error Feed</h3>
+    <div class="small">Recent errors from broker connection metadata and run logs. Auto-refreshes every 5s.</div>
+    <div hx-get="/partials/broker_errors" hx-trigger="load, every 5s" hx-swap="innerHTML">Loading…</div>
+  </div>
+</div>
+<script src="/static/portfolio_solid.js?v=20260308d"></script>
+{% endblock %}

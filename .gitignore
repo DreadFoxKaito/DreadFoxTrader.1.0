@@ -1,0 +1,25 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python / virtualenv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime app data
+app/data/*
+!app/data/.gitkeep
+data.db
+
+# Local certificates
+*.pem
+*.key
+*.crt
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

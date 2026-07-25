@@ -1,0 +1,11 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="row" style="justify-content:space-between">
+  <div>
+    <h2 style="margin:0">Runs</h2>
+    <div class="small">Each run is a spawned process tied to an Algorithm + params snapshot.</div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:12px" hx-get="/partials/runs_table" hx-trigger="load, every 2s" hx-swap="innerHTML">Loading…</div>
+{% endblock %}

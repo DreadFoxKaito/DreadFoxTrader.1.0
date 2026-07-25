@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Optional dependency for strategy_forge --mode optuna.
+optuna>=4,<6

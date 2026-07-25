@@ -1,0 +1,221 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="container">
+  <div class="row" style="justify-content:space-between; align-items:flex-end;">
+    <div>
+      <h2 style="margin:0;">Broker</h2>
+      <div class="small">Link and manage multiple broker connections. Portfolio panels auto-refresh.</div>
+    </div>
+    <div class="row">
+      <a class="btn" href="/">Dashboard</a>
+      <a class="btn" href="/algorithms">Algorithms</a>
+      <a class="btn" href="/runs">Runs</a>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:14px; margin-top:14px;">
+    <!-- LEFT: Connections -->
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div>
+          <b>Broker Connections</b>
+          <div class="small">Add / remove brokers. Choose a connection to focus the dashboard.</div>
+        </div>
+        <div class="row">
+          <button class="btn"
+                  hx-get="/partials/broker_connections"
+                  hx-target="#broker_connections"
+                  hx-swap="innerHTML">
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div id="broker_connections"
+           hx-get="/partials/broker_connections"
+           hx-trigger="load, every 15s"
+           hx-swap="innerHTML"
+           style="margin-top:10px;">
+        <div class="small">Loading broker connections…</div>
+      </div>
+
+      <div class="hr" style="margin:14px 0;"></div>
+
+      <details open>
+        <summary><b>Add / Link Broker</b></summary>
+
+        <!-- Schwab -->
+        <div class="card" style="margin-top:10px; padding:12px;">
+          <div class="row" style="justify-content:space-between; align-items:center;">
+            <div>
+              <b>Schwab</b>
+              <div class="small">Optional OAuth connection. Configure here only if this install will use Schwab.</div>
+            </div>
+            <div class="row">
+              <a class="btn primary" href="/broker/connect">Connect</a>
+              <form method="post" action="/broker/disconnect" style="margin:0;">
+                <button class="btn danger" type="submit">Disconnect</button>
+              </form>
+            </div>
+          </div>
+          <form method="post" action="/broker/schwab/configure" style="margin-top:10px;">
+            <div class="grid" style="grid-template-columns: 1fr 1fr; gap:10px;">
+              <div>
+                <label class="small">Label</label>
+                <input name="label" placeholder="Schwab" value="Schwab" />
+              </div>
+              <div>
+                <label class="small">OAuth Scope</label>
+                <input name="scope" placeholder="readonly" value="{{ (schwab_config or {}).get('scope', 'readonly') }}" />
+              </div>
+              <div>
+                <label class="small">Client ID</label>
+                <input name="client_id" placeholder="Optional until connecting Schwab" value="{{ (schwab_config or {}).get('client_id', '') }}" />
+              </div>
+              <div>
+                <label class="small">Client Secret</label>
+                <input name="client_secret" type="password" placeholder="Optional until connecting Schwab" />
+              </div>
+              <div>
+                <label class="small">Redirect URI</label>
+                <input name="redirect_uri" value="{{ (schwab_config or {}).get('redirect_uri', 'https://127.0.0.1:8000/callback') }}" />
+              </div>
+              <div>
+                <label class="small">Trader API Base</label>
+                <input name="trader_api_base" value="{{ (schwab_config or {}).get('trader_api_base', 'https://api.schwabapi.com/trader/v1') }}" />
+              </div>
+              <div>
+                <label class="small">Market Data Base (optional)</label>
+                <input name="market_data_base" placeholder="Derived from trader base if blank" value="{{ (schwab_config or {}).get('market_data_base', '') }}" />
+              </div>
+              <div>
+                <label class="small">Account Hash (optional)</label>
+                <input name="account_hash" placeholder="Resolved after connect if blank" value="{{ (schwab_config or {}).get('account_hash', '') }}" />
+              </div>
+            </div>
+            <div class="row" style="margin-top:10px; justify-content:space-between; align-items:center;">
+              <div class="small">Schwab is optional. Robinhood-only installs can leave this blank.</div>
+              <button class="btn" type="submit">Save Schwab Settings</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Robinhood -->
+        <div class="card" style="margin-top:10px; padding:12px;">
+          <div class="row" style="justify-content:space-between; align-items:center;">
+            <div>
+              <b>Robinhood</b>
+              <div class="small">
+                Uses robin_stocks (credentials are handled server-side; later steps will store secrets encrypted at rest).
+              </div>
+            </div>
+          </div>
+
+          <form method="post" action="/broker/robinhood/link" style="margin-top:10px;">
+            <div class="grid" style="grid-template-columns: 1fr 1fr; gap:10px;">
+              <div>
+                <label class="small">Label</label>
+                <input name="label" placeholder="Robinhood (Personal)" value="Robinhood" />
+              </div>
+              <div>
+                <label class="small">MFA Code (optional)</label>
+                <input name="mfa_code" placeholder="123456" />
+              </div>
+              <div>
+                <label class="small">Username / Email</label>
+                <input name="username" placeholder="you@example.com" required />
+              </div>
+              <div>
+                <label class="small">Password</label>
+                <input name="password" type="password" placeholder="••••••••" required />
+              </div>
+            </div>
+
+            <div class="row" style="margin-top:10px; justify-content:space-between; align-items:center;">
+              <div class="small">
+                Note: Robinhood may require additional challenge/MFA steps depending on your account settings.
+              </div>
+              <button class="btn primary" type="submit">Connect Robinhood</button>
+            </div>
+          </form>
+        </div>
+      </details>
+    </div>
+
+    <!-- RIGHT: Portfolio Dashboard -->
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div>
+          <b>Portfolio Dashboard</b>
+          <div class="small">
+            Shows balances + positions. If you open /broker?connection_id=&lt;id&gt; this panel will focus that connection.
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn"
+                  hx-get="/partials/portfolio_dashboard{% if request and request.url and request.url.query %}?{{ request.url.query }}{% endif %}"
+                  hx-target="#portfolio_dashboard"
+                  hx-swap="innerHTML">
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div id="portfolio_dashboard"
+           hx-get="/partials/portfolio_dashboard{% if request and request.url and request.url.query %}?{{ request.url.query }}{% endif %}"
+           hx-trigger="load, every 20s"
+           hx-swap="innerHTML"
+           style="margin-top:10px;">
+        <div class="small">Loading portfolio…</div>
+      </div>
+
+      <div class="hr" style="margin:14px 0;"></div>
+
+      <details>
+        <summary><b>Troubleshooting</b></summary>
+        <div class="small" style="margin-top:10px;">
+          <ul style="margin-top:6px;">
+            <li>If Schwab shows <i>Auth error</i>, reconnect using <b>Connect</b>.</li>
+            <li>If Robinhood fails, it may require MFA/challenge support — we’ll harden that in later steps.</li>
+            <li>Connection cards above include a <b>Remove</b> button to unlink a broker connection.</li>
+          </ul>
+        </div>
+      </details>
+    </div>
+
+    <div class="card" style="grid-column: 1 / -1;">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div>
+          <b>Network Usage</b>
+          <div class="small">
+            Live download/upload rates and cumulative traffic while the app is running.
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn"
+                  hx-get="/partials/network_usage"
+                  hx-target="#network_usage"
+                  hx-swap="innerHTML">
+            Refresh
+          </button>
+          <button class="btn"
+                  hx-post="/partials/network_usage/reset"
+                  hx-target="#network_usage"
+                  hx-swap="innerHTML">
+            Reset Totals
+          </button>
+        </div>
+      </div>
+
+      <div id="network_usage"
+           hx-get="/partials/network_usage"
+           hx-trigger="load, every 5s"
+           hx-swap="innerHTML"
+           style="margin-top:10px;">
+        <div class="small">Loading network usage...</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
