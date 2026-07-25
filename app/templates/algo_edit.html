@@ -645,6 +645,93 @@
             </div>
           </div>
           <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Donchian Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_donchian_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_donchian_lookback" type="number" min="1" step="1" value="20" placeholder="Lookback" style="width:110px;" />
+              <select id="if_donchian_buy_cond">
+                <option value="close_above_upper" selected>BUY: close above upper</option>
+                <option value="high_above_upper">BUY: high breaks upper</option>
+                <option value="inside_channel">BUY: inside channel</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_donchian_sell_cond">
+                <option value="close_below_lower" selected>SELL: close below lower</option>
+                <option value="low_below_lower">SELL: low breaks lower</option>
+                <option value="inside_channel">SELL: inside channel</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <div id="if_donchian_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_donchian">Save Donchian Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Supertrend Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_supertrend_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_supertrend_atr_len" type="number" min="1" step="1" value="10" placeholder="ATR length" style="width:120px;" />
+              <input id="if_supertrend_mult" type="number" min="0.1" step="0.1" value="3.0" placeholder="Multiplier" style="width:120px;" />
+              <select id="if_supertrend_buy_cond">
+                <option value="trend_up" selected>BUY: trend up</option>
+                <option value="close_above_trend">BUY: close above trend</option>
+                <option value="flip_up">BUY: flip up</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_supertrend_sell_cond">
+                <option value="trend_down" selected>SELL: trend down</option>
+                <option value="close_below_trend">SELL: close below trend</option>
+                <option value="flip_down">SELL: flip down</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <div id="if_supertrend_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_supertrend">Save Supertrend Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add VWAP Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_vwap_name" placeholder="Name (optional)" style="width:100%;" />
+              <select id="if_vwap_buy_cond">
+                <option value="within_band" selected>BUY: near VWAP band</option>
+                <option value="price_above_vwap">BUY: price above VWAP</option>
+                <option value="cross_above">BUY: crosses above VWAP</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_vwap_sell_cond">
+                <option value="exit_below" selected>SELL: below exit band</option>
+                <option value="price_below_vwap">SELL: price below VWAP</option>
+                <option value="cross_below">SELL: crosses below VWAP</option>
+                <option value="overextended_above">SELL: overextended above</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <input id="if_vwap_max_ext" type="number" step="0.001" value="0.015" placeholder="Max extension decimal" style="width:180px;" />
+              <input id="if_vwap_max_pullback" type="number" step="0.001" value="0.010" placeholder="Max pullback decimal" style="width:180px;" />
+              <input id="if_vwap_exit_below" type="number" step="0.001" value="0.012" placeholder="Exit below decimal" style="width:170px;" />
+              <div id="if_vwap_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_vwap">Save VWAP Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Relative Volume Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_rvol_name" placeholder="Name (optional)" style="width:100%;" />
+              <input id="if_rvol_length" type="number" min="1" step="1" value="20" placeholder="Average length" style="width:140px;" />
+              <input id="if_rvol_threshold" type="number" min="0" step="0.1" value="1.2" placeholder="Threshold" style="width:120px;" />
+              <select id="if_rvol_buy_cond">
+                <option value="above_threshold" selected>BUY: above threshold</option>
+                <option value="rising">BUY: rising</option>
+                <option value="hold">BUY: hold</option>
+              </select>
+              <select id="if_rvol_sell_cond">
+                <option value="below_threshold" selected>SELL: below threshold</option>
+                <option value="falling">SELL: falling</option>
+                <option value="hold">SELL: hold</option>
+              </select>
+              <div id="if_rvol_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_rvol">Save Relative Volume Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
             <div class="small"><b>Add Bollinger Bands Rule</b></div>
             <div class="row" style="margin-top:8px;">
               <input id="if_bb_name" placeholder="Name (optional)" style="width:100%;" />
@@ -1697,6 +1784,67 @@
       return map[c] || c || "hold";
     }
 
+    function donchianCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        close_above_upper: "close above prior upper channel",
+        high_above_upper: "high breaks prior upper channel",
+        close_below_lower: "close below prior lower channel",
+        low_below_lower: "low breaks prior lower channel",
+        inside_channel: "close inside prior channel"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function supertrendCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        trend_up: "Supertrend direction up",
+        trend_down: "Supertrend direction down",
+        close_above_trend: "close above Supertrend",
+        close_below_trend: "close below Supertrend",
+        flip_up: "Supertrend flips up",
+        flip_down: "Supertrend flips down"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function vwapCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        price_above_vwap: "price above VWAP",
+        price_below_vwap: "price below VWAP",
+        within_band: "price inside VWAP pullback/extension band",
+        overextended_above: "price overextended above VWAP",
+        extended_below: "price extended below VWAP",
+        cross_above: "price crosses above VWAP",
+        cross_below: "price crosses below VWAP",
+        exit_below: "price below VWAP exit band"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function rvolCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "hold",
+        above_threshold: "relative volume above threshold",
+        below_threshold: "relative volume below threshold",
+        rising: "relative volume rising",
+        falling: "relative volume falling"
+      };
+      return map[c] || c || "hold";
+    }
+
+    function pctDecimal(raw, fallback) {
+      const n = asNumber(raw);
+      if (n === null) return fallback;
+      return Math.abs(n) > 1 ? n / 100 : n;
+    }
+
     function rocCondDesc(cond, side, buyThreshold, sellThreshold) {
       const c = String(cond || "hold").trim().toLowerCase();
       const threshold = side === "sell" ? sellThreshold : buyThreshold;
@@ -1874,6 +2022,58 @@
         `<b>BUY:</b> ${sarCondDesc(buyCond.value)}<br>` +
         `<b>SELL:</b> ${sarCondDesc(sellCond.value)}<br>` +
         `Settings: step ${fmtRuleNum(step, 4)}, max ${fmtRuleNum(maxStep, 4)}.`;
+    }
+
+    function syncDonchianSummary() {
+      const host = b.querySelector("#if_donchian_summary");
+      const buyCond = b.querySelector("#if_donchian_buy_cond");
+      const sellCond = b.querySelector("#if_donchian_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const lookback = Math.max(1, parseInt(String(b.querySelector("#if_donchian_lookback")?.value || "20"), 10) || 20);
+      host.innerHTML =
+        `<b>BUY:</b> ${donchianCondTxt(buyCond.value)}<br>` +
+        `<b>SELL:</b> ${donchianCondTxt(sellCond.value)}<br>` +
+        `Settings: ${lookback} prior bars.`;
+    }
+
+    function syncSupertrendSummary() {
+      const host = b.querySelector("#if_supertrend_summary");
+      const buyCond = b.querySelector("#if_supertrend_buy_cond");
+      const sellCond = b.querySelector("#if_supertrend_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const atrLen = Math.max(1, parseInt(String(b.querySelector("#if_supertrend_atr_len")?.value || "10"), 10) || 10);
+      const mult = Math.max(0.1, asNumber(b.querySelector("#if_supertrend_mult")?.value) ?? 3.0);
+      host.innerHTML =
+        `<b>BUY:</b> ${supertrendCondTxt(buyCond.value)}<br>` +
+        `<b>SELL:</b> ${supertrendCondTxt(sellCond.value)}<br>` +
+        `Settings: ATR ${atrLen}, multiplier ${fmtRuleNum(mult, 3)}.`;
+    }
+
+    function syncVwapSummary() {
+      const host = b.querySelector("#if_vwap_summary");
+      const buyCond = b.querySelector("#if_vwap_buy_cond");
+      const sellCond = b.querySelector("#if_vwap_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const ext = pctDecimal(b.querySelector("#if_vwap_max_ext")?.value, 0.015);
+      const pull = pctDecimal(b.querySelector("#if_vwap_max_pullback")?.value, 0.010);
+      const exit = pctDecimal(b.querySelector("#if_vwap_exit_below")?.value, 0.012);
+      host.innerHTML =
+        `<b>BUY:</b> ${vwapCondTxt(buyCond.value)}<br>` +
+        `<b>SELL:</b> ${vwapCondTxt(sellCond.value)}<br>` +
+        `Band: pullback ${fmtRuleNum(pull * 100, 3)}%, extension ${fmtRuleNum(ext * 100, 3)}%, exit below ${fmtRuleNum(exit * 100, 3)}%.`;
+    }
+
+    function syncRvolSummary() {
+      const host = b.querySelector("#if_rvol_summary");
+      const buyCond = b.querySelector("#if_rvol_buy_cond");
+      const sellCond = b.querySelector("#if_rvol_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const length = Math.max(1, parseInt(String(b.querySelector("#if_rvol_length")?.value || "20"), 10) || 20);
+      const threshold = Math.max(0, asNumber(b.querySelector("#if_rvol_threshold")?.value) ?? 1.2);
+      host.innerHTML =
+        `<b>BUY:</b> ${rvolCondTxt(buyCond.value)}<br>` +
+        `<b>SELL:</b> ${rvolCondTxt(sellCond.value)}<br>` +
+        `Settings: ${length}-bar average, threshold ${fmtRuleNum(threshold, 3)}.`;
     }
 
     function syncBbSummary() {
@@ -2059,6 +2259,33 @@
           `BUY=${buyCond}; SELL=${sellCond}.`
         );
         lines.push("Cross conditions trigger only on the bar price flips through SAR.");
+      } else if (kind === "donchian" || kind === "donchian_breakout") {
+        const lookback = Math.max(1, parseInt(String(p.lookback || "20"), 10) || 20);
+        const buyCond = donchianCondTxt(p.buy_condition || (p.use_high_break ? "high_above_upper" : "close_above_upper"));
+        const sellCond = donchianCondTxt(p.sell_condition || "close_below_lower");
+        lines.push(`Donchian (${lookback} prior bars): BUY=${buyCond}; SELL=${sellCond}.`);
+      } else if (kind === "supertrend" || kind === "supertrend_trend") {
+        const atrLen = Math.max(1, parseInt(String(p.atr_length || "10"), 10) || 10);
+        const multRaw = asNumber(p.multiplier);
+        const mult = multRaw === null ? 3.0 : Math.max(0.1, multRaw);
+        const buyCond = supertrendCondTxt(p.buy_condition || "trend_up");
+        const sellCond = supertrendCondTxt(p.sell_condition || "trend_down");
+        lines.push(`Supertrend (ATR ${atrLen}, multiplier ${fmtRuleNum(mult, 3)}): BUY=${buyCond}; SELL=${sellCond}.`);
+      } else if (kind === "vwap" || kind === "vwap_filter") {
+        const buyCond = vwapCondTxt(p.buy_condition || "within_band");
+        const sellCond = vwapCondTxt(p.sell_condition || "exit_below");
+        const ext = pctDecimal(p.max_extension_pct, 0.015);
+        const pull = pctDecimal(p.max_pullback_pct, 0.010);
+        const exit = pctDecimal(p.exit_below_pct, 0.012);
+        lines.push(`VWAP: BUY=${buyCond}; SELL=${sellCond}.`);
+        lines.push(`Band: pullback ${fmtRuleNum(pull * 100, 3)}%, extension ${fmtRuleNum(ext * 100, 3)}%, exit below ${fmtRuleNum(exit * 100, 3)}%.`);
+      } else if (kind === "relative_volume" || kind === "rvol" || kind === "rel_volume") {
+        const length = Math.max(1, parseInt(String(p.length || "20"), 10) || 20);
+        const thresholdRaw = asNumber(p.threshold);
+        const threshold = thresholdRaw === null ? 1.2 : Math.max(0, thresholdRaw);
+        const buyCond = rvolCondTxt(p.buy_condition || "above_threshold");
+        const sellCond = rvolCondTxt(p.sell_condition || "below_threshold");
+        lines.push(`Relative Volume (${length}): BUY=${buyCond}; SELL=${sellCond}; threshold ${fmtRuleNum(threshold, 3)}.`);
       } else if (kind === "bb") {
         const len = Math.max(2, parseInt(String(p.length || "20"), 10) || 20);
         const stdMultRaw = asNumber(p.std_mult);
@@ -2484,6 +2711,67 @@
       });
     });
 
+    b.querySelector("#if_add_donchian").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_donchian_name").value || "").trim();
+      const lookback = Math.max(1, parseInt(b.querySelector("#if_donchian_lookback").value || "20", 10));
+      addRule({
+        name: nameRaw || "Donchian Breakout",
+        kind: "donchian",
+        params: {
+          lookback,
+          buy_condition: b.querySelector("#if_donchian_buy_cond").value,
+          sell_condition: b.querySelector("#if_donchian_sell_cond").value
+        }
+      });
+    });
+
+    b.querySelector("#if_add_supertrend").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_supertrend_name").value || "").trim();
+      const atrLength = Math.max(1, parseInt(b.querySelector("#if_supertrend_atr_len").value || "10", 10));
+      const multRaw = parseFloat(b.querySelector("#if_supertrend_mult").value || "3");
+      addRule({
+        name: nameRaw || "Supertrend",
+        kind: "supertrend",
+        params: {
+          atr_length: atrLength,
+          multiplier: Number.isFinite(multRaw) ? Math.max(0.1, multRaw) : 3.0,
+          buy_condition: b.querySelector("#if_supertrend_buy_cond").value,
+          sell_condition: b.querySelector("#if_supertrend_sell_cond").value
+        }
+      });
+    });
+
+    b.querySelector("#if_add_vwap").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_vwap_name").value || "").trim();
+      addRule({
+        name: nameRaw || "VWAP Filter",
+        kind: "vwap",
+        params: {
+          buy_condition: b.querySelector("#if_vwap_buy_cond").value,
+          sell_condition: b.querySelector("#if_vwap_sell_cond").value,
+          max_extension_pct: pctDecimal(b.querySelector("#if_vwap_max_ext").value, 0.015),
+          max_pullback_pct: pctDecimal(b.querySelector("#if_vwap_max_pullback").value, 0.010),
+          exit_below_pct: pctDecimal(b.querySelector("#if_vwap_exit_below").value, 0.012)
+        }
+      });
+    });
+
+    b.querySelector("#if_add_rvol").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_rvol_name").value || "").trim();
+      const length = Math.max(1, parseInt(b.querySelector("#if_rvol_length").value || "20", 10));
+      const thresholdRaw = parseFloat(b.querySelector("#if_rvol_threshold").value || "1.2");
+      addRule({
+        name: nameRaw || "Relative Volume",
+        kind: "relative_volume",
+        params: {
+          length,
+          threshold: Number.isFinite(thresholdRaw) ? Math.max(0, thresholdRaw) : 1.2,
+          buy_condition: b.querySelector("#if_rvol_buy_cond").value,
+          sell_condition: b.querySelector("#if_rvol_sell_cond").value
+        }
+      });
+    });
+
     b.querySelector("#if_add_bb").addEventListener("click", () => {
       const nameRaw = (b.querySelector("#if_bb_name").value || "").trim();
       const length = Math.max(2, parseInt(b.querySelector("#if_bb_length").value || "20", 10));
@@ -2733,6 +3021,22 @@
     bindIndicatorSummarySync(
       ["#if_sar_buy_cond", "#if_sar_sell_cond", "#if_sar_step", "#if_sar_max"],
       syncSarSummary
+    );
+    bindIndicatorSummarySync(
+      ["#if_donchian_buy_cond", "#if_donchian_sell_cond", "#if_donchian_lookback"],
+      syncDonchianSummary
+    );
+    bindIndicatorSummarySync(
+      ["#if_supertrend_buy_cond", "#if_supertrend_sell_cond", "#if_supertrend_atr_len", "#if_supertrend_mult"],
+      syncSupertrendSummary
+    );
+    bindIndicatorSummarySync(
+      ["#if_vwap_buy_cond", "#if_vwap_sell_cond", "#if_vwap_max_ext", "#if_vwap_max_pullback", "#if_vwap_exit_below"],
+      syncVwapSummary
+    );
+    bindIndicatorSummarySync(
+      ["#if_rvol_buy_cond", "#if_rvol_sell_cond", "#if_rvol_length", "#if_rvol_threshold"],
+      syncRvolSummary
     );
     bindIndicatorSummarySync(
       ["#if_bb_buy_cond", "#if_bb_sell_cond", "#if_bb_squeeze", "#if_bb_pctb_buy", "#if_bb_pctb_sell"],

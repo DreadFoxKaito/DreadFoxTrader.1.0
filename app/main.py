@@ -4447,6 +4447,346 @@ def _market_roc_series(prices: list[float], length: int = 12) -> list[Optional[f
     return out
 
 
+def _market_donchian_channels(
+    highs: Optional[list[float]],
+    lows: Optional[list[float]],
+    lookback: int,
+) -> tuple[list[Optional[float]], list[Optional[float]]]:
+    n = min(len(highs or []), len(lows or []))
+    upper: list[Optional[float]] = [None] * n
+    lower: list[Optional[float]] = [None] * n
+    ln = max(1, int(lookback))
+    if n <= 1:
+        return upper, lower
+    high_vals: list[float] = []
+    low_vals: list[float] = []
+    try:
+        high_vals = [float(v) for v in (highs or [])[:n]]
+        low_vals = [float(v) for v in (lows or [])[:n]]
+    except Exception:
+        return upper, lower
+    for i in range(n):
+        start = max(0, i - ln)
+        if i - start < 1:
+            continue
+        upper[i] = max(high_vals[start:i])
+        lower[i] = min(low_vals[start:i])
+    return upper, lower
+
+
+def _donchian_condition_hit(
+    cond: str,
+    *,
+    close_now: float,
+    high_now: Optional[float],
+    low_now: Optional[float],
+    upper: float,
+    lower: float,
+) -> bool:
+    c = _normalize_donchian_condition(cond, default="hold")
+    if c == "hold":
+        return False
+    if c == "close_above_upper":
+        return float(close_now) > float(upper)
+    if c == "high_above_upper":
+        return float(high_now if high_now is not None else close_now) > float(upper)
+    if c == "close_below_lower":
+        return float(close_now) < float(lower)
+    if c == "low_below_lower":
+        return float(low_now if low_now is not None else close_now) < float(lower)
+    if c == "inside_channel":
+        return float(lower) <= float(close_now) <= float(upper)
+    return False
+
+
+def _market_true_range_series(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+) -> list[Optional[float]]:
+    n = min(len(highs), len(lows), len(closes))
+    out: list[Optional[float]] = [None] * n
+    if n <= 0:
+        return out
+    try:
+        high_vals = [float(v) for v in highs[:n]]
+        low_vals = [float(v) for v in lows[:n]]
+        close_vals = [float(v) for v in closes[:n]]
+    except Exception:
+        return out
+    for i in range(n):
+        prev_close = close_vals[i - 1] if i > 0 else close_vals[i]
+        out[i] = max(
+            high_vals[i] - low_vals[i],
+            abs(high_vals[i] - prev_close),
+            abs(low_vals[i] - prev_close),
+        )
+    return out
+
+
+def _market_atr_series(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    length: int,
+) -> list[Optional[float]]:
+    ln = max(1, int(length))
+    tr = _market_true_range_series(highs, lows, closes)
+    out: list[Optional[float]] = [None] * len(tr)
+    if len(tr) < ln:
+        return out
+    for i in range(ln - 1, len(tr)):
+        window = [v for v in tr[i - ln + 1 : i + 1] if isinstance(v, (int, float))]
+        if len(window) == ln:
+            out[i] = float(sum(float(v) for v in window) / float(ln))
+    return out
+
+
+def _market_supertrend_series(
+    closes: list[float],
+    *,
+    highs: Optional[list[float]] = None,
+    lows: Optional[list[float]] = None,
+    atr_length: int = 10,
+    multiplier: float = 3.0,
+) -> tuple[list[Optional[float]], list[Optional[float]]]:
+    n = len(closes)
+    trend: list[Optional[float]] = [None] * n
+    direction: list[Optional[float]] = [None] * n
+    final_upper: list[Optional[float]] = [None] * n
+    final_lower: list[Optional[float]] = [None] * n
+    if n <= 0:
+        return trend, direction
+    try:
+        close_vals = [float(v) for v in closes]
+        high_vals = [
+            float(highs[i]) if isinstance(highs, list) and i < len(highs) else float(close_vals[i])
+            for i in range(n)
+        ]
+        low_vals = [
+            float(lows[i]) if isinstance(lows, list) and i < len(lows) else float(close_vals[i])
+            for i in range(n)
+        ]
+    except Exception:
+        return trend, direction
+    atr_values = _market_atr_series(high_vals, low_vals, close_vals, max(1, int(atr_length)))
+    mult = max(0.1, float(multiplier))
+    for i in range(n):
+        atr_now = atr_values[i]
+        if atr_now is None:
+            continue
+        hl2 = (high_vals[i] + low_vals[i]) / 2.0
+        basic_upper = hl2 + (mult * float(atr_now))
+        basic_lower = hl2 - (mult * float(atr_now))
+        if i == 0 or final_upper[i - 1] is None or final_lower[i - 1] is None:
+            final_upper[i] = basic_upper
+            final_lower[i] = basic_lower
+            direction[i] = 1.0
+            trend[i] = final_lower[i]
+            continue
+        prev_close = close_vals[i - 1]
+        prev_upper = float(final_upper[i - 1])
+        prev_lower = float(final_lower[i - 1])
+        final_upper[i] = basic_upper if basic_upper < prev_upper or prev_close > prev_upper else prev_upper
+        final_lower[i] = basic_lower if basic_lower > prev_lower or prev_close < prev_lower else prev_lower
+        if close_vals[i] > prev_upper:
+            direction[i] = 1.0
+        elif close_vals[i] < prev_lower:
+            direction[i] = -1.0
+        else:
+            direction[i] = direction[i - 1] if direction[i - 1] is not None else 1.0
+        trend[i] = final_lower[i] if float(direction[i] or 0.0) >= 0.0 else final_upper[i]
+    return trend, direction
+
+
+def _supertrend_condition_hit(
+    cond: str,
+    *,
+    close_now: float,
+    close_prev: Optional[float],
+    trend_now: float,
+    trend_prev: Optional[float],
+    direction_now: float,
+    direction_prev: Optional[float],
+) -> bool:
+    c = _normalize_supertrend_condition(cond, default="hold")
+    if c == "hold":
+        return False
+    if c == "trend_up":
+        return float(direction_now) > 0.0
+    if c == "trend_down":
+        return float(direction_now) < 0.0
+    if c == "close_above_trend":
+        return float(close_now) > float(trend_now)
+    if c == "close_below_trend":
+        return float(close_now) < float(trend_now)
+    if c == "flip_up":
+        return direction_prev is not None and float(direction_prev) <= 0.0 and float(direction_now) > 0.0
+    if c == "flip_down":
+        return direction_prev is not None and float(direction_prev) >= 0.0 and float(direction_now) < 0.0
+    return False
+
+
+def _market_timestamp_day(raw: Any) -> str:
+    txt = str(raw or "").strip()
+    if not txt:
+        return "all"
+    if re.fullmatch(r"\d{10,13}", txt):
+        try:
+            sec = int(txt)
+            if sec > 10_000_000_000:
+                sec = int(sec / 1000)
+            return datetime.fromtimestamp(sec, tz=timezone.utc).date().isoformat()
+        except Exception:
+            return "all"
+    try:
+        parsed = datetime.fromisoformat(txt.replace("Z", "+00:00"))
+        return parsed.date().isoformat()
+    except Exception:
+        return txt[:10] if len(txt) >= 10 else "all"
+
+
+def _market_vwap_series(
+    closes: list[float],
+    *,
+    highs: Optional[list[float]] = None,
+    lows: Optional[list[float]] = None,
+    volumes: Optional[list[float]] = None,
+    timestamps: Optional[list[str]] = None,
+) -> list[Optional[float]]:
+    n = len(closes)
+    out: list[Optional[float]] = [None] * n
+    if n <= 0 or not isinstance(volumes, list) or len(volumes) < n:
+        return out
+    try:
+        close_vals = [float(v) for v in closes]
+        high_vals = [
+            float(highs[i]) if isinstance(highs, list) and i < len(highs) else float(close_vals[i])
+            for i in range(n)
+        ]
+        low_vals = [
+            float(lows[i]) if isinstance(lows, list) and i < len(lows) else float(close_vals[i])
+            for i in range(n)
+        ]
+        volume_vals = [float(volumes[i]) for i in range(n)]
+    except Exception:
+        return out
+    if not any(v > 0.0 and math.isfinite(v) for v in volume_vals):
+        return out
+    cum_pv = 0.0
+    cum_vol = 0.0
+    current_day = ""
+    for i in range(n):
+        day = (
+            _market_timestamp_day(timestamps[i])
+            if isinstance(timestamps, list) and i < len(timestamps)
+            else "all"
+        )
+        if day != current_day:
+            current_day = day
+            cum_pv = 0.0
+            cum_vol = 0.0
+        vol = max(0.0, volume_vals[i])
+        if vol > 0.0 and math.isfinite(vol):
+            typical = (high_vals[i] + low_vals[i] + close_vals[i]) / 3.0
+            cum_pv += typical * vol
+            cum_vol += vol
+        if cum_vol > 0.0:
+            out[i] = cum_pv / cum_vol
+    return out
+
+
+def _vwap_condition_hit(
+    cond: str,
+    *,
+    close_now: float,
+    close_prev: Optional[float],
+    vwap_now: float,
+    vwap_prev: Optional[float],
+    max_extension_pct: float,
+    max_pullback_pct: float,
+    exit_below_pct: float,
+) -> bool:
+    c = _normalize_vwap_condition(cond, default="hold")
+    if c == "hold":
+        return False
+    if c == "price_above_vwap":
+        return float(close_now) >= float(vwap_now)
+    if c == "price_below_vwap":
+        return float(close_now) <= float(vwap_now)
+    if c == "within_band":
+        return (
+            float(close_now) >= float(vwap_now) * (1.0 - float(max_pullback_pct))
+            and float(close_now) <= float(vwap_now) * (1.0 + float(max_extension_pct))
+        )
+    if c == "overextended_above":
+        return float(close_now) > float(vwap_now) * (1.0 + float(max_extension_pct))
+    if c == "extended_below":
+        return float(close_now) < float(vwap_now) * (1.0 - float(max_pullback_pct))
+    if c == "cross_above":
+        return (
+            close_prev is not None
+            and vwap_prev is not None
+            and float(close_prev) <= float(vwap_prev)
+            and float(close_now) > float(vwap_now)
+        )
+    if c == "cross_below":
+        return (
+            close_prev is not None
+            and vwap_prev is not None
+            and float(close_prev) >= float(vwap_prev)
+            and float(close_now) < float(vwap_now)
+        )
+    if c == "exit_below":
+        return float(close_now) < float(vwap_now) * (1.0 - float(exit_below_pct))
+    return False
+
+
+def _market_relative_volume_series(volumes: Optional[list[float]], length: int = 20) -> list[Optional[float]]:
+    if not isinstance(volumes, list):
+        return []
+    n = len(volumes)
+    ln = max(1, int(length))
+    out: list[Optional[float]] = [None] * n
+    try:
+        vals = [max(0.0, float(v)) for v in volumes]
+    except Exception:
+        return out
+    if n < ln or not any(v > 0.0 for v in vals):
+        return out
+    running = sum(vals[:ln])
+    avg = running / float(ln)
+    if avg > 0.0:
+        out[ln - 1] = vals[ln - 1] / avg
+    for i in range(ln, n):
+        running += vals[i] - vals[i - ln]
+        avg = running / float(ln)
+        if avg > 0.0:
+            out[i] = vals[i] / avg
+    return out
+
+
+def _relative_volume_condition_hit(
+    cond: str,
+    *,
+    rvol: float,
+    prev_rvol: Optional[float],
+    threshold: float,
+) -> bool:
+    c = _normalize_relative_volume_condition(cond, default="hold")
+    if c == "hold":
+        return False
+    if c == "above_threshold":
+        return float(rvol) >= float(threshold)
+    if c == "below_threshold":
+        return float(rvol) <= float(threshold)
+    if c == "rising":
+        return prev_rvol is not None and float(rvol) > float(prev_rvol)
+    if c == "falling":
+        return prev_rvol is not None and float(rvol) < float(prev_rvol)
+    return False
+
+
 def _market_sar_series_with_trend(
     closes: list[float],
     *,
@@ -4898,11 +5238,15 @@ def _market_extended_session_counts(rows: list[dict[str, Any]]) -> tuple[int, in
     return pre, post
 
 
-def _market_extract_ohlc(rows: list[dict[str, Any]]) -> tuple[list[float], list[float], list[float], list[float]]:
+def _market_extract_ohlcv(
+    rows: list[dict[str, Any]],
+) -> tuple[list[float], list[float], list[float], list[float], list[float], list[str]]:
     opens: list[float] = []
     highs: list[float] = []
     lows: list[float] = []
     closes: list[float] = []
+    volumes: list[float] = []
+    timestamps: list[str] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -4919,6 +5263,25 @@ def _market_extract_ohlc(rows: list[dict[str, Any]]) -> tuple[list[float], list[
         highs.append(h)
         lows.append(l)
         closes.append(c)
+        volume_raw = None
+        for key in (
+            "volume",
+            "volume_traded",
+            "volume_traded_units",
+            "session_volume",
+            "total_volume",
+        ):
+            if row.get(key) not in (None, "", "None"):
+                volume_raw = row.get(key)
+                break
+        vol = _to_float_opt(volume_raw)
+        volumes.append(float(vol) if vol is not None and math.isfinite(float(vol)) else 0.0)
+        timestamps.append(_market_row_ts(row))
+    return opens, highs, lows, closes, volumes, timestamps
+
+
+def _market_extract_ohlc(rows: list[dict[str, Any]]) -> tuple[list[float], list[float], list[float], list[float]]:
+    opens, highs, lows, closes, _volumes, _timestamps = _market_extract_ohlcv(rows)
     return opens, highs, lows, closes
 
 
@@ -5073,6 +5436,25 @@ def _market_fetch_ohlc_rows(
     return best_rows, requested_bounds
 
 
+def _market_fetch_ohlcv(
+    symbol: str,
+    timeframe: str,
+    broker_hint: str = "robinhood",
+    *,
+    min_candles: int = 0,
+    include_extended: bool = False,
+) -> tuple[list[float], list[float], list[float], list[float], list[float], list[str], list[dict[str, Any]], str]:
+    rows, requested_bounds = _market_fetch_ohlc_rows(
+        symbol,
+        timeframe,
+        broker_hint=broker_hint,
+        min_candles=min_candles,
+        include_extended=include_extended,
+    )
+    opens, highs, lows, closes, volumes, timestamps = _market_extract_ohlcv(rows)
+    return opens, highs, lows, closes, volumes, timestamps, rows, requested_bounds
+
+
 def _market_fetch_ohlc(
     symbol: str,
     timeframe: str,
@@ -5081,14 +5463,13 @@ def _market_fetch_ohlc(
     min_candles: int = 0,
     include_extended: bool = False,
 ) -> tuple[list[float], list[float], list[float], list[float], list[dict[str, Any]], str]:
-    rows, requested_bounds = _market_fetch_ohlc_rows(
+    opens, highs, lows, closes, _volumes, _timestamps, rows, requested_bounds = _market_fetch_ohlcv(
         symbol,
         timeframe,
         broker_hint=broker_hint,
         min_candles=min_candles,
         include_extended=include_extended,
     )
-    opens, highs, lows, closes = _market_extract_ohlc(rows)
     return opens, highs, lows, closes, rows, requested_bounds
 
 
@@ -5199,6 +5580,14 @@ def _rule_line_color(rule: dict[str, Any]) -> str:
         kind = "roc"
     elif kind_raw in ("sar", "psar", "parabolic_sar", "parabolic"):
         kind = "sar"
+    elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+        kind = "donchian"
+    elif kind_raw in ("supertrend", "supertrend_trend"):
+        kind = "supertrend"
+    elif kind_raw in ("vwap", "vwap_filter"):
+        kind = "vwap"
+    elif kind_raw in ("relative_volume", "rvol", "rel_volume"):
+        kind = "relative_volume"
     else:
         kind = kind_raw
     params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
@@ -5228,6 +5617,14 @@ def _rule_line_color(rule: dict[str, Any]) -> str:
         return "#f59e0b"
     if kind == "sar":
         return "#f43f5e"
+    if kind == "donchian":
+        return "#38bdf8"
+    if kind == "supertrend":
+        return "#22c55e"
+    if kind == "vwap":
+        return "#facc15"
+    if kind == "relative_volume":
+        return "#fb7185"
     if kind in ("heikin_ashi", "ha"):
         return "#f97316"
     return "#e8ecff"
@@ -5902,6 +6299,147 @@ def _normalize_sar_condition(value: Any, *, default: str = "hold") -> str:
     return s
 
 
+_DONCHIAN_CONDITION_LABELS: dict[str, str] = {
+    "hold": "hold",
+    "close_above_upper": "close above prior upper channel",
+    "high_above_upper": "high breaks prior upper channel",
+    "close_below_lower": "close below prior lower channel",
+    "low_below_lower": "low breaks prior lower channel",
+    "inside_channel": "close inside prior channel",
+}
+
+
+def _normalize_donchian_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases: dict[str, str] = {
+        "breakout": "close_above_upper",
+        "close_breakout": "close_above_upper",
+        "upper_break": "close_above_upper",
+        "high_break": "high_above_upper",
+        "use_high_break": "high_above_upper",
+        "breakdown": "close_below_lower",
+        "close_breakdown": "close_below_lower",
+        "lower_break": "close_below_lower",
+        "low_break": "low_below_lower",
+    }
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in _DONCHIAN_CONDITION_LABELS:
+        s = str(default or "hold").strip().lower()
+    if s not in _DONCHIAN_CONDITION_LABELS:
+        s = "hold"
+    return s
+
+
+_SUPERTREND_CONDITION_LABELS: dict[str, str] = {
+    "hold": "hold",
+    "trend_up": "Supertrend direction up",
+    "trend_down": "Supertrend direction down",
+    "close_above_trend": "close above Supertrend",
+    "close_below_trend": "close below Supertrend",
+    "flip_up": "Supertrend flips up",
+    "flip_down": "Supertrend flips down",
+}
+
+
+def _normalize_supertrend_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases: dict[str, str] = {
+        "up": "trend_up",
+        "down": "trend_down",
+        "bullish": "trend_up",
+        "bearish": "trend_down",
+        "price_above": "close_above_trend",
+        "price_below": "close_below_trend",
+        "cross_up": "flip_up",
+        "cross_down": "flip_down",
+    }
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in _SUPERTREND_CONDITION_LABELS:
+        s = str(default or "hold").strip().lower()
+    if s not in _SUPERTREND_CONDITION_LABELS:
+        s = "hold"
+    return s
+
+
+_VWAP_CONDITION_LABELS: dict[str, str] = {
+    "hold": "hold",
+    "price_above_vwap": "price above VWAP",
+    "price_below_vwap": "price below VWAP",
+    "within_band": "price inside VWAP pullback/extension band",
+    "overextended_above": "price overextended above VWAP",
+    "extended_below": "price extended below VWAP",
+    "cross_above": "price crosses above VWAP",
+    "cross_below": "price crosses below VWAP",
+    "exit_below": "price below VWAP exit band",
+}
+
+
+def _normalize_vwap_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases: dict[str, str] = {
+        "above": "price_above_vwap",
+        "below": "price_below_vwap",
+        "filter": "within_band",
+        "vwap_filter": "within_band",
+        "near_vwap": "within_band",
+        "not_overextended": "within_band",
+        "cross_up": "cross_above",
+        "cross_down": "cross_below",
+        "sell_below": "exit_below",
+    }
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in _VWAP_CONDITION_LABELS:
+        s = str(default or "hold").strip().lower()
+    if s not in _VWAP_CONDITION_LABELS:
+        s = "hold"
+    return s
+
+
+_RELATIVE_VOLUME_CONDITION_LABELS: dict[str, str] = {
+    "hold": "hold",
+    "above_threshold": "relative volume above threshold",
+    "below_threshold": "relative volume below threshold",
+    "rising": "relative volume rising",
+    "falling": "relative volume falling",
+}
+
+
+def _normalize_relative_volume_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases: dict[str, str] = {
+        "above": "above_threshold",
+        "below": "below_threshold",
+        "volume_spike": "above_threshold",
+        "spike": "above_threshold",
+        "increasing": "rising",
+        "decreasing": "falling",
+    }
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in _RELATIVE_VOLUME_CONDITION_LABELS:
+        s = str(default or "hold").strip().lower()
+    if s not in _RELATIVE_VOLUME_CONDITION_LABELS:
+        s = "hold"
+    return s
+
+
+def _indicator_pct_decimal(value: Any, *, default: float) -> float:
+    raw = _to_float_opt(value)
+    if raw is None:
+        return float(default)
+    out = float(raw)
+    if abs(out) > 1.0:
+        out = out / 100.0
+    return float(out)
+
+
 def _indicator_rule_summary_lines(
     rule: dict[str, Any],
     *,
@@ -5918,6 +6456,14 @@ def _indicator_rule_summary_lines(
         kind = "roc"
     elif kind_raw in ("sar", "psar", "parabolic_sar", "parabolic"):
         kind = "sar"
+    elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+        kind = "donchian"
+    elif kind_raw in ("supertrend", "supertrend_trend"):
+        kind = "supertrend"
+    elif kind_raw in ("vwap", "vwap_filter"):
+        kind = "vwap"
+    elif kind_raw in ("relative_volume", "rvol", "rel_volume"):
+        kind = "relative_volume"
     else:
         kind = kind_raw
     params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
@@ -6069,6 +6615,60 @@ def _indicator_rule_summary_lines(
         )
         lines.append(
             "SAR trails trend direction; cross conditions trigger only on the transition bar."
+        )
+        return lines
+
+    if kind == "donchian":
+        lookback = max(1, int(_to_int_opt(params.get("lookback")) or 20))
+        default_buy = "high_above_upper" if bool(params.get("use_high_break")) else "close_above_upper"
+        buy_cond = _normalize_donchian_condition(params.get("buy_condition"), default=default_buy)
+        sell_cond = _normalize_donchian_condition(params.get("sell_condition"), default="close_below_lower")
+        lines.append(
+            f"Donchian ({lookback} prior bars): "
+            f"BUY={_DONCHIAN_CONDITION_LABELS.get(buy_cond, buy_cond)}; "
+            f"SELL={_DONCHIAN_CONDITION_LABELS.get(sell_cond, sell_cond)}."
+        )
+        return lines
+
+    if kind == "supertrend":
+        atr_length = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
+        multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
+        buy_cond = _normalize_supertrend_condition(params.get("buy_condition"), default="trend_up")
+        sell_cond = _normalize_supertrend_condition(params.get("sell_condition"), default="trend_down")
+        lines.append(
+            f"Supertrend (ATR {atr_length}, multiplier {_rule_summary_num(multiplier, 3)}): "
+            f"BUY={_SUPERTREND_CONDITION_LABELS.get(buy_cond, buy_cond)}; "
+            f"SELL={_SUPERTREND_CONDITION_LABELS.get(sell_cond, sell_cond)}."
+        )
+        return lines
+
+    if kind == "vwap":
+        buy_cond = _normalize_vwap_condition(params.get("buy_condition"), default="within_band")
+        sell_cond = _normalize_vwap_condition(params.get("sell_condition"), default="exit_below")
+        max_extension = _indicator_pct_decimal(params.get("max_extension_pct"), default=0.015)
+        max_pullback = _indicator_pct_decimal(params.get("max_pullback_pct"), default=0.010)
+        exit_below = _indicator_pct_decimal(params.get("exit_below_pct"), default=0.012)
+        lines.append(
+            f"VWAP: BUY={_VWAP_CONDITION_LABELS.get(buy_cond, buy_cond)}; "
+            f"SELL={_VWAP_CONDITION_LABELS.get(sell_cond, sell_cond)}."
+        )
+        lines.append(
+            f"Band: pullback {_rule_summary_num(max_pullback * 100.0, 3)}%, "
+            f"extension {_rule_summary_num(max_extension * 100.0, 3)}%, "
+            f"exit below {_rule_summary_num(exit_below * 100.0, 3)}%."
+        )
+        return lines
+
+    if kind == "relative_volume":
+        length = max(1, int(_to_int_opt(params.get("length")) or 20))
+        threshold = max(0.0, float(_to_float_opt(params.get("threshold")) or 1.2))
+        buy_cond = _normalize_relative_volume_condition(params.get("buy_condition"), default="above_threshold")
+        sell_cond = _normalize_relative_volume_condition(params.get("sell_condition"), default="below_threshold")
+        lines.append(
+            f"Relative Volume ({length}): "
+            f"BUY={_RELATIVE_VOLUME_CONDITION_LABELS.get(buy_cond, buy_cond)}; "
+            f"SELL={_RELATIVE_VOLUME_CONDITION_LABELS.get(sell_cond, sell_cond)}; "
+            f"threshold {_rule_summary_num(threshold, 3)}."
         )
         return lines
 
@@ -7268,6 +7868,8 @@ def _eval_indicator_rule(
     opens: Optional[list[float]] = None,
     highs: Optional[list[float]] = None,
     lows: Optional[list[float]] = None,
+    volumes: Optional[list[float]] = None,
+    timestamps: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     kind_raw = str(rule.get("kind") or "").strip().lower()
     if kind_raw == "ha":
@@ -7282,6 +7884,14 @@ def _eval_indicator_rule(
         kind = "roc"
     elif kind_raw in ("sar", "psar", "parabolic_sar", "parabolic"):
         kind = "sar"
+    elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+        kind = "donchian"
+    elif kind_raw in ("supertrend", "supertrend_trend"):
+        kind = "supertrend"
+    elif kind_raw in ("vwap", "vwap_filter"):
+        kind = "vwap"
+    elif kind_raw in ("relative_volume", "rvol", "rel_volume"):
+        kind = "relative_volume"
     else:
         kind = kind_raw
     params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
@@ -7831,6 +8441,210 @@ def _eval_indicator_rule(
         )
         return out
 
+    if kind == "donchian":
+        lookback = max(1, int(_to_int_opt(params.get("lookback")) or 20))
+        default_buy = "high_above_upper" if bool(params.get("use_high_break")) else "close_above_upper"
+        buy_cond = _normalize_donchian_condition(params.get("buy_condition"), default=default_buy)
+        sell_cond = _normalize_donchian_condition(params.get("sell_condition"), default="close_below_lower")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        src_highs = highs if isinstance(highs, list) and len(highs) >= len(closes) else closes
+        src_lows = lows if isinstance(lows, list) and len(lows) >= len(closes) else closes
+        upper_series, lower_series = _market_donchian_channels(src_highs, src_lows, lookback)
+        upper = upper_series[-1] if upper_series else None
+        lower = lower_series[-1] if lower_series else None
+        if upper is None or lower is None:
+            out["detail"] = f"Donchian({lookback}) unavailable"
+            return out
+        close_now = float(_to_float_opt(price) or closes[-1])
+        high_now = _to_float_opt(src_highs[-1] if src_highs else None)
+        low_now = _to_float_opt(src_lows[-1] if src_lows else None)
+        buy_ok = True if buy_ignored else _donchian_condition_hit(
+            buy_cond,
+            close_now=close_now,
+            high_now=high_now,
+            low_now=low_now,
+            upper=float(upper),
+            lower=float(lower),
+        )
+        sell_ok = True if sell_ignored else _donchian_condition_hit(
+            sell_cond,
+            close_now=close_now,
+            high_now=high_now,
+            low_now=low_now,
+            upper=float(upper),
+            lower=float(lower),
+        )
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        out["value"] = (
+            f"DC{lookback} U={_fmt_market_num(upper,4)} L={_fmt_market_num(lower,4)} "
+            f"P={_fmt_market_num(close_now,4)}"
+        )
+        out["detail"] = f"buy={buy_cond} sell={sell_cond}"
+        return out
+
+    if kind == "supertrend":
+        atr_length = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
+        multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
+        buy_cond = _normalize_supertrend_condition(params.get("buy_condition"), default="trend_up")
+        sell_cond = _normalize_supertrend_condition(params.get("sell_condition"), default="trend_down")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        src_highs = highs if isinstance(highs, list) and len(highs) >= len(closes) else closes
+        src_lows = lows if isinstance(lows, list) and len(lows) >= len(closes) else closes
+        trend_series, direction_series = _market_supertrend_series(
+            closes,
+            highs=src_highs,
+            lows=src_lows,
+            atr_length=atr_length,
+            multiplier=multiplier,
+        )
+        trend_now = trend_series[-1] if trend_series else None
+        direction_now = direction_series[-1] if direction_series else None
+        trend_prev = trend_series[-2] if len(trend_series) >= 2 else None
+        direction_prev = direction_series[-2] if len(direction_series) >= 2 else None
+        close_now = float(_to_float_opt(price) or closes[-1])
+        close_prev = _to_float_opt(closes[-2] if len(closes) >= 2 else None)
+        if trend_now is None or direction_now is None:
+            out["detail"] = f"Supertrend({atr_length},{_fmt_market_num(multiplier,2)}) unavailable"
+            return out
+        buy_ok = True if buy_ignored else _supertrend_condition_hit(
+            buy_cond,
+            close_now=close_now,
+            close_prev=close_prev,
+            trend_now=float(trend_now),
+            trend_prev=trend_prev,
+            direction_now=float(direction_now),
+            direction_prev=direction_prev,
+        )
+        sell_ok = True if sell_ignored else _supertrend_condition_hit(
+            sell_cond,
+            close_now=close_now,
+            close_prev=close_prev,
+            trend_now=float(trend_now),
+            trend_prev=trend_prev,
+            direction_now=float(direction_now),
+            direction_prev=direction_prev,
+        )
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        direction_txt = "up" if float(direction_now) > 0.0 else "down"
+        out["value"] = (
+            f"ST={_fmt_market_num(trend_now,4)} "
+            f"P={_fmt_market_num(close_now,4)} dir={direction_txt}"
+        )
+        out["detail"] = (
+            f"ATR={atr_length} mult={_fmt_market_num(multiplier,2)} "
+            f"buy={buy_cond} sell={sell_cond} prev_dir={_fmt_market_num(direction_prev,0)}"
+        )
+        return out
+
+    if kind == "vwap":
+        buy_cond = _normalize_vwap_condition(params.get("buy_condition"), default="within_band")
+        sell_cond = _normalize_vwap_condition(params.get("sell_condition"), default="exit_below")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        src_highs = highs if isinstance(highs, list) and len(highs) >= len(closes) else closes
+        src_lows = lows if isinstance(lows, list) and len(lows) >= len(closes) else closes
+        vwap_series = _market_vwap_series(
+            closes,
+            highs=src_highs,
+            lows=src_lows,
+            volumes=volumes,
+            timestamps=timestamps,
+        )
+        vwap_now = vwap_series[-1] if vwap_series else None
+        vwap_prev = vwap_series[-2] if len(vwap_series) >= 2 else None
+        close_now = float(_to_float_opt(price) or closes[-1])
+        close_prev = _to_float_opt(closes[-2] if len(closes) >= 2 else None)
+        max_extension = _indicator_pct_decimal(params.get("max_extension_pct"), default=0.015)
+        max_pullback = _indicator_pct_decimal(params.get("max_pullback_pct"), default=0.010)
+        exit_below = _indicator_pct_decimal(params.get("exit_below_pct"), default=0.012)
+        if vwap_now is None or float(vwap_now) <= 0.0:
+            out["detail"] = "VWAP unavailable: volume data unavailable"
+            return out
+        buy_ok = True if buy_ignored else _vwap_condition_hit(
+            buy_cond,
+            close_now=close_now,
+            close_prev=close_prev,
+            vwap_now=float(vwap_now),
+            vwap_prev=vwap_prev,
+            max_extension_pct=max_extension,
+            max_pullback_pct=max_pullback,
+            exit_below_pct=exit_below,
+        )
+        sell_ok = True if sell_ignored else _vwap_condition_hit(
+            sell_cond,
+            close_now=close_now,
+            close_prev=close_prev,
+            vwap_now=float(vwap_now),
+            vwap_prev=vwap_prev,
+            max_extension_pct=max_extension,
+            max_pullback_pct=max_pullback,
+            exit_below_pct=exit_below,
+        )
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        dist_pct = ((close_now - float(vwap_now)) / max(abs(float(vwap_now)), 1.0e-9)) * 100.0
+        out["value"] = (
+            f"VWAP={_fmt_market_num(vwap_now,4)} "
+            f"P={_fmt_market_num(close_now,4)} dist={_fmt_market_num(dist_pct,3)}%"
+        )
+        out["detail"] = (
+            f"buy={buy_cond} sell={sell_cond} "
+            f"ext={_fmt_market_num(max_extension * 100.0,3)}% "
+            f"pull={_fmt_market_num(max_pullback * 100.0,3)}% "
+            f"exit={_fmt_market_num(exit_below * 100.0,3)}%"
+        )
+        return out
+
+    if kind == "relative_volume":
+        length = max(1, int(_to_int_opt(params.get("length")) or 20))
+        threshold = max(0.0, float(_to_float_opt(params.get("threshold")) or 1.2))
+        buy_cond = _normalize_relative_volume_condition(params.get("buy_condition"), default="above_threshold")
+        sell_cond = _normalize_relative_volume_condition(params.get("sell_condition"), default="below_threshold")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        rvol_series = _market_relative_volume_series(volumes, length=length)
+        rvol = rvol_series[-1] if rvol_series else None
+        prev_rvol = rvol_series[-2] if len(rvol_series) >= 2 else None
+        if rvol is None:
+            out["detail"] = f"RVOL({length}) unavailable: volume data unavailable"
+            return out
+        buy_ok = True if buy_ignored else _relative_volume_condition_hit(
+            buy_cond,
+            rvol=float(rvol),
+            prev_rvol=prev_rvol,
+            threshold=threshold,
+        )
+        sell_ok = True if sell_ignored else _relative_volume_condition_hit(
+            sell_cond,
+            rvol=float(rvol),
+            prev_rvol=prev_rvol,
+            threshold=threshold,
+        )
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        latest_volume = volumes[-1] if isinstance(volumes, list) and volumes else None
+        out["value"] = (
+            f"RVOL{length}={_fmt_market_num(rvol,3)} "
+            f"V={_fmt_market_num(latest_volume,0)}"
+        )
+        out["detail"] = (
+            f"buy={buy_cond} sell={sell_cond} "
+            f"threshold={_fmt_market_num(threshold,3)} prev={_fmt_market_num(prev_rvol,3)}"
+        )
+        return out
+
     if kind == "macd":
         fast = max(2, int(_to_int_opt(params.get("fast_length")) or 12))
         slow = max(2, int(_to_int_opt(params.get("slow_length")) or 26))
@@ -8143,11 +8957,22 @@ def _build_indicator_rule_checks(
     opens: Optional[list[float]] = None,
     highs: Optional[list[float]] = None,
     lows: Optional[list[float]] = None,
+    volumes: Optional[list[float]] = None,
+    timestamps: Optional[list[str]] = None,
     apply_overrides: bool = True,
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     for rule in rules:
-        check = _eval_indicator_rule(rule, closes, price, opens=opens, highs=highs, lows=lows)
+        check = _eval_indicator_rule(
+            rule,
+            closes,
+            price,
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            volumes=volumes,
+            timestamps=timestamps,
+        )
         params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
         base_name = str(check.get("name") or _rule_name(rule))
         base_kind = str(rule.get("kind") or "").strip().lower()
@@ -8176,7 +9001,7 @@ def _build_indicator_rule_checks(
 
 def _build_indicator_rule_checks_by_timeframe(
     rules: list[dict[str, Any]],
-    ohlc_by_timeframe: dict[str, tuple[list[float], list[float], list[float], list[float]]],
+    ohlc_by_timeframe: dict[str, tuple[list[float], ...]],
     *,
     default_timeframe: str,
     apply_overrides: bool = True,
@@ -8204,7 +9029,9 @@ def _build_indicator_rule_checks_by_timeframe(
             check["_timeframe"] = tf
             checks.append(check)
             continue
-        opens, highs, lows, closes = ohlc
+        opens, highs, lows, closes = ohlc[:4]
+        volumes = ohlc[4] if len(ohlc) >= 5 else None
+        timestamps = ohlc[5] if len(ohlc) >= 6 else None
         if len(closes) < 2:
             continue
         item_checks = _build_indicator_rule_checks(
@@ -8214,6 +9041,8 @@ def _build_indicator_rule_checks_by_timeframe(
             opens=opens,
             highs=highs,
             lows=lows,
+            volumes=volumes if isinstance(volumes, list) else None,
+            timestamps=timestamps if isinstance(timestamps, list) else None,
             apply_overrides=False,
         )
         for item in item_checks:
@@ -8322,6 +9151,12 @@ def _market_chart_svg(
     display_width: int = 700,
     display_height: int = 330,
     show_price_markers: bool = False,
+    volumes: Optional[list[float]] = None,
+    timestamps: Optional[list[str]] = None,
+    donchian_lookbacks: Optional[list[int]] = None,
+    supertrend_configs: Optional[list[tuple[int, float]]] = None,
+    vwap_enabled: bool = False,
+    rvol_lengths: Optional[list[int]] = None,
 ) -> str:
     if len(closes) < 2:
         return "<span class='small'>—</span>"
@@ -8330,6 +9165,8 @@ def _market_chart_svg(
     max_pts = max(180, int(required_points) + 80)
     max_pts = min(max_pts, 1200)
     data = closes[-max_pts:]
+    vol_data = volumes[-max_pts:] if isinstance(volumes, list) else None
+    ts_data = timestamps[-max_pts:] if isinstance(timestamps, list) else None
     if isinstance(opens, list) and isinstance(highs, list) and isinstance(lows, list):
         o_data = opens[-max_pts:]
         h_data = highs[-max_pts:]
@@ -8466,6 +9303,42 @@ def _market_chart_svg(
             step=cfg[0],
             max_step=cfg[1],
         )
+    donchian_lens: list[int] = sorted(
+        set(max(1, int(x)) for x in (donchian_lookbacks or []) if int(x) >= 1)
+    )
+    donchian_series_map: dict[int, tuple[list[Optional[float]], list[Optional[float]]]] = {}
+    for ln in donchian_lens:
+        donchian_series_map[ln] = _market_donchian_channels(highs_syn, lows_syn, ln)
+    supertrend_cfgs: list[tuple[int, float]] = sorted(
+        set(
+            (
+                max(1, int(cfg[0])),
+                max(0.1, float(cfg[1])),
+            )
+            for cfg in (supertrend_configs or [])
+            if isinstance(cfg, (list, tuple)) and len(cfg) >= 2
+        )
+    )
+    supertrend_series_map: dict[tuple[int, float], tuple[list[Optional[float]], list[Optional[float]]]] = {}
+    for cfg in supertrend_cfgs:
+        supertrend_series_map[cfg] = _market_supertrend_series(
+            data,
+            highs=highs_syn,
+            lows=lows_syn,
+            atr_length=cfg[0],
+            multiplier=cfg[1],
+        )
+    vwap_series = (
+        _market_vwap_series(data, highs=highs_syn, lows=lows_syn, volumes=vol_data, timestamps=ts_data)
+        if bool(vwap_enabled)
+        else []
+    )
+    rvol_lens: list[int] = sorted(
+        set(max(1, int(x)) for x in (rvol_lengths or []) if int(x) >= 1)
+    )
+    rvol_series_map: dict[int, list[Optional[float]]] = {}
+    for ln in rvol_lens:
+        rvol_series_map[ln] = _market_relative_volume_series(vol_data, length=ln)
 
     ha_open: list[float] = []
     ha_close: list[float] = []
@@ -8500,6 +9373,18 @@ def _market_chart_svg(
         for v in vals:
             if isinstance(v, (int, float)):
                 price_vals.append(float(v))
+    for upper, lower in donchian_series_map.values():
+        for vals in (upper, lower):
+            for v in vals:
+                if isinstance(v, (int, float)):
+                    price_vals.append(float(v))
+    for trend_vals, _direction_vals in supertrend_series_map.values():
+        for v in trend_vals:
+            if isinstance(v, (int, float)):
+                price_vals.append(float(v))
+    for v in vwap_series:
+        if isinstance(v, (int, float)):
+            price_vals.append(float(v))
     if not price_vals:
         return "<span class='small'>—</span>"
     pmin, pmax = min(price_vals), max(price_vals)
@@ -8573,6 +9458,10 @@ def _market_chart_svg(
                 osc_vals.append(float(v))
     for ttm_series in ttm_series_map.values():
         for v in ttm_series.get("momentum", []):
+            if isinstance(v, (int, float)):
+                osc_vals.append(float(v))
+    for vals in rvol_series_map.values():
+        for v in vals:
             if isinstance(v, (int, float)):
                 osc_vals.append(float(v))
     omin, omax = (-1.0, 1.0)
@@ -8734,6 +9623,28 @@ def _market_chart_svg(
                 f"<path d='{lower_path}' stroke='#38bdf8' stroke-width='1.05' fill='none' opacity='{extra_opacity}'{extra_dash}/>"
             )
 
+    for idx, ln in enumerate(donchian_lens):
+        upper, lower = donchian_series_map.get(ln, ([None] * n, [None] * n))
+        panel_bg_paths.extend(
+            _band_area_paths(
+                upper,
+                lower,
+                fill="rgba(20,184,166,0.10)" if idx == 0 else "rgba(20,184,166,0.05)",
+            )
+        )
+        dash = "" if idx == 0 else " stroke-dasharray='4 3'"
+        opacity = "0.92" if idx == 0 else "0.70"
+        upper_path = _path(upper, pmin, pmax, 0.0, top_h)
+        lower_path = _path(lower, pmin, pmax, 0.0, top_h)
+        if upper_path:
+            paths.append(
+                f"<path d='{upper_path}' stroke='#14b8a6' stroke-width='1.05' fill='none' opacity='{opacity}'{dash}/>"
+            )
+        if lower_path:
+            paths.append(
+                f"<path d='{lower_path}' stroke='#14b8a6' stroke-width='1.05' fill='none' opacity='{opacity}'{dash}/>"
+            )
+
     for idx, cfg in enumerate(ichimoku_cfgs):
         series = ichimoku_series_map.get(cfg, {})
         span_a = series.get("span_a", [None] * n)
@@ -8848,6 +9759,34 @@ def _market_chart_svg(
         price_path = _path(price_vals_for_path, pmin, pmax, 0.0, top_h)
         if price_path:
             paths.append(f"<path d='{price_path}' stroke='#f8fafc' stroke-width='1.8' fill='none'/>")
+    for idx, cfg in enumerate(supertrend_cfgs):
+        trend_vals, direction_vals = supertrend_series_map.get(cfg, ([None] * n, [None] * n))
+        up_seg: list[str] = []
+        down_seg: list[str] = []
+        for i, raw_v in enumerate(trend_vals):
+            if not isinstance(raw_v, (int, float)):
+                continue
+            x = (i / max(1, axis_points - 1)) * width
+            y = _price_y(float(raw_v))
+            d = direction_vals[i] if i < len(direction_vals) else None
+            target = up_seg if isinstance(d, (int, float)) and float(d) >= 0.0 else down_seg
+            target.append(("M" if not target else "L") + f"{x:.2f},{y:.2f}")
+        opacity = "0.96" if idx == 0 else "0.70"
+        dash = "" if idx == 0 else " stroke-dasharray='3 2'"
+        if up_seg:
+            paths.append(
+                f"<path d='{' '.join(up_seg)}' stroke='#22c55e' stroke-width='1.35' fill='none' opacity='{opacity}'{dash}/>"
+            )
+        if down_seg:
+            paths.append(
+                f"<path d='{' '.join(down_seg)}' stroke='#ef4444' stroke-width='1.35' fill='none' opacity='{opacity}'{dash}/>"
+            )
+    if vwap_series:
+        vwap_path = _path(vwap_series, pmin, pmax, 0.0, top_h)
+        if vwap_path:
+            paths.append(
+                f"<path d='{vwap_path}' stroke='#facc15' stroke-width='1.25' fill='none' stroke-dasharray='6 2'/>"
+            )
     for ln in sorted(set(int(x) for x in ma_lengths if int(x) >= 2)):
         ma_path = _path(price_series.get(f"ma{ln}", [None] * n), pmin, pmax, 0.0, top_h)
         if ma_path:
@@ -8901,6 +9840,14 @@ def _market_chart_svg(
             opacity = "0.9" if idx == 0 else "0.68"
             paths.append(
                 f"<path d='{mom_path}' stroke='#06b6d4' stroke-width='1.0' fill='none' opacity='{opacity}'{dash}/>"
+            )
+    for idx, ln in enumerate(rvol_lens):
+        rvol_path = _path(rvol_series_map.get(ln, [None] * n), omin, omax, top_h + 2.0, bot_h)
+        if rvol_path:
+            dash = "" if idx == 0 else " stroke-dasharray='3 2'"
+            opacity = "0.95" if idx == 0 else "0.72"
+            paths.append(
+                f"<path d='{rvol_path}' stroke='#fb7185' stroke-width='1.05' fill='none' opacity='{opacity}'{dash}/>"
             )
     for ln in sorted(set(int(x) for x in d_ma_lengths if int(x) >= 2)):
         d_path = _path(d_ma_series_map.get(ln, [None] * n), omin, omax, top_h + 2.0, bot_h)
@@ -9013,10 +9960,14 @@ def _render_markets_indicators_html(
     ttm_configs = chart_cfg["ttm_configs"]
     roc_lengths = chart_cfg["roc_lengths"]
     sar_configs = chart_cfg["sar_configs"]
+    donchian_lookbacks = chart_cfg.get("donchian_lookbacks") or []
+    supertrend_configs = chart_cfg.get("supertrend_configs") or []
+    rvol_lengths = chart_cfg.get("rvol_lengths") or []
     ichimoku_configs = chart_cfg["ichimoku_configs"]
     has_rsi = bool(chart_cfg["has_rsi"])
     has_drsi = bool(chart_cfg["has_drsi"])
     has_heikin_ashi = bool(chart_cfg["has_heikin_ashi"])
+    has_vwap = bool(chart_cfg.get("has_vwap"))
     min_required = int(chart_cfg["min_required"])
     rule_columns = _indicator_runtime_rule_entries(rules)
 
@@ -9030,7 +9981,11 @@ def _render_markets_indicators_html(
         "<thead><tr>" + "".join(headers) + "</tr></thead><tbody>",
     ]
     for sym in symbols:
-        closes = _market_fetch_closes(sym, timeframe)
+        opens, highs, lows, closes, volumes, timestamps, _raw_rows, _requested_bounds = _market_fetch_ohlcv(
+            sym,
+            timeframe,
+            min_candles=min_required,
+        )
         if len(closes) < min_required:
             rows.append(
                 "<tr>"
@@ -9042,7 +9997,16 @@ def _render_markets_indicators_html(
             )
             continue
         price = float(closes[-1])
-        checks = _build_indicator_rule_checks(rules, closes, price)
+        checks = _build_indicator_rule_checks(
+            rules,
+            closes,
+            price,
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            volumes=volumes,
+            timestamps=timestamps,
+        )
         buy_pass = sum(1 for c in checks if (not bool(c.get("buy_ignored"))) and bool(c.get("buy_ok")))
         sell_pass = sum(1 for c in checks if (not bool(c.get("sell_ignored"))) and bool(c.get("sell_ok")))
         buy_total = sum(1 for c in checks if not bool(c.get("buy_ignored")))
@@ -9057,6 +10021,9 @@ def _render_markets_indicators_html(
             cls = "signal-sell"
         chart = _market_chart_svg(
             closes=closes,
+            opens=opens,
+            highs=highs,
+            lows=lows,
             ma_lengths=ma_lengths,
             ema_lengths=ema_lengths,
             macd_configs=macd_configs,
@@ -9072,6 +10039,12 @@ def _render_markets_indicators_html(
             d_ma_lengths=d_ma_lengths,
             d_ema_lengths=d_ema_lengths,
             ichimoku_configs=ichimoku_configs,
+            volumes=volumes,
+            timestamps=timestamps,
+            donchian_lookbacks=donchian_lookbacks,
+            supertrend_configs=supertrend_configs,
+            vwap_enabled=has_vwap,
+            rvol_lengths=rvol_lengths,
         )
         cells = [
             f"<td><b>{html.escape(sym)}</b></td>",
@@ -9134,9 +10107,33 @@ def _normalize_indicator_rules_payload(raw: Any, *, default_timeframe: str = "")
             kind = "roc"
         elif kind_raw in ("sar", "psar", "parabolic_sar", "parabolic"):
             kind = "sar"
+        elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+            kind = "donchian"
+        elif kind_raw in ("supertrend", "supertrend_trend"):
+            kind = "supertrend"
+        elif kind_raw in ("vwap", "vwap_filter"):
+            kind = "vwap"
+        elif kind_raw in ("relative_volume", "rvol", "rel_volume"):
+            kind = "relative_volume"
         else:
             kind = kind_raw
-        if kind not in ("ma", "ema", "rsi", "rsi_d", "macd", "heikin_ashi", "bb", "ichimoku", "ttm", "roc", "sar"):
+        if kind not in (
+            "ma",
+            "ema",
+            "rsi",
+            "rsi_d",
+            "macd",
+            "heikin_ashi",
+            "bb",
+            "ichimoku",
+            "ttm",
+            "roc",
+            "sar",
+            "donchian",
+            "supertrend",
+            "vwap",
+            "relative_volume",
+        ):
             continue
         params = item.get("params") if isinstance(item.get("params"), dict) else {}
         rule: dict[str, Any] = {
@@ -9164,14 +10161,21 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
     ttm_configs: list[tuple[int, float, int, float, int]] = []
     roc_lengths: list[int] = []
     sar_configs: list[tuple[float, float]] = []
+    donchian_lookbacks: list[int] = []
+    supertrend_configs: list[tuple[int, float]] = []
+    rvol_lengths: list[int] = []
     has_rsi = False
     has_drsi = False
     has_heikin_ashi = False
+    has_vwap = False
     longest_bb = 0
     longest_ichimoku = 0
     longest_ttm = 0
     longest_roc = 0
     longest_sar = 0
+    longest_donchian = 0
+    longest_supertrend = 0
+    longest_rvol = 0
 
     def _flag(v: Any) -> bool:
         if isinstance(v, bool):
@@ -9195,6 +10199,14 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
             kind = "roc"
         elif kind_raw in ("sar", "psar", "parabolic_sar", "parabolic"):
             kind = "sar"
+        elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+            kind = "donchian"
+        elif kind_raw in ("supertrend", "supertrend_trend"):
+            kind = "supertrend"
+        elif kind_raw in ("vwap", "vwap_filter"):
+            kind = "vwap"
+        elif kind_raw in ("relative_volume", "rvol", "rel_volume"):
+            kind = "relative_volume"
         else:
             kind = kind_raw
         params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
@@ -9264,6 +10276,21 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
             max_step = max(step, float(_to_float_opt(params.get("max_step")) or 0.2))
             sar_configs.append((step, max_step))
             longest_sar = max(longest_sar, 3)
+        elif kind == "donchian":
+            lookback = max(1, int(_to_int_opt(params.get("lookback")) or 20))
+            donchian_lookbacks.append(lookback)
+            longest_donchian = max(longest_donchian, lookback + 1)
+        elif kind == "supertrend":
+            atr_length = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
+            multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
+            supertrend_configs.append((atr_length, multiplier))
+            longest_supertrend = max(longest_supertrend, atr_length + 2)
+        elif kind == "vwap":
+            has_vwap = True
+        elif kind == "relative_volume":
+            length = max(1, int(_to_int_opt(params.get("length")) or 20))
+            rvol_lengths.append(length)
+            longest_rvol = max(longest_rvol, length + 1)
 
     longest_ma = max(ma_lengths) if ma_lengths else 0
     longest_ema = max(ema_lengths) if ema_lengths else 0
@@ -9284,6 +10311,9 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
         longest_ttm,
         longest_roc,
         longest_sar,
+        longest_donchian,
+        longest_supertrend,
+        longest_rvol,
     )
 
     return {
@@ -9296,10 +10326,14 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
         "ttm_configs": sorted(set(ttm_configs)),
         "roc_lengths": sorted(set(roc_lengths)),
         "sar_configs": sorted(set(sar_configs)),
+        "donchian_lookbacks": sorted(set(donchian_lookbacks)),
+        "supertrend_configs": sorted(set(supertrend_configs)),
+        "rvol_lengths": sorted(set(rvol_lengths)),
         "ichimoku_configs": sorted(set(ichimoku_configs)),
         "has_rsi": has_rsi,
         "has_drsi": has_drsi,
         "has_heikin_ashi": has_heikin_ashi,
+        "has_vwap": has_vwap,
         "min_required": min_required,
     }
 
@@ -9434,7 +10468,7 @@ def _render_indicatorforge_preview_html(
         highs: list[float],
         lows: list[float],
         closes: list[float],
-        ohlc_by_tf: dict[str, tuple[list[float], list[float], list[float], list[float]]],
+        ohlc_by_tf: dict[str, tuple[list[float], ...]],
         checks: list[dict[str, Any]],
         signal: str,
         buy_votes: int,
@@ -9450,7 +10484,9 @@ def _render_indicatorforge_preview_html(
             ohlc = ohlc_by_tf.get(tf)
             if ohlc is None:
                 continue
-            tf_opens, tf_highs, tf_lows, tf_closes = ohlc
+            tf_opens, tf_highs, tf_lows, tf_closes = ohlc[:4]
+            tf_volumes = ohlc[4] if len(ohlc) >= 5 and isinstance(ohlc[4], list) else None
+            tf_timestamps = ohlc[5] if len(ohlc) >= 6 and isinstance(ohlc[5], list) else None
             cfg = chart_cfg_by_tf.get(tf) or _indicator_rules_chart_config(tf_rules)
             chart = _market_chart_svg(
                 closes=tf_closes,
@@ -9475,6 +10511,12 @@ def _render_indicatorforge_preview_html(
                 display_width=420,
                 display_height=180,
                 show_price_markers=True,
+                volumes=tf_volumes,
+                timestamps=tf_timestamps,
+                donchian_lookbacks=cfg.get("donchian_lookbacks") or [],
+                supertrend_configs=cfg.get("supertrend_configs") or [],
+                vwap_enabled=bool(cfg.get("has_vwap")),
+                rvol_lengths=cfg.get("rvol_lengths") or [],
             )
             chart_parts.append(
                 "<div class='indicatorforge-tf-chart'>"
@@ -9517,9 +10559,12 @@ def _render_indicatorforge_preview_html(
         cells.append(f"<td>{chart}</td>")
         rows.append("<tr>" + "".join(cells) + "</tr>")
 
-    def _fetch_ohlc_for_preview(sym: str, tf: str) -> tuple[list[float], list[float], list[float], list[float], int]:
+    def _fetch_ohlc_for_preview(
+        sym: str,
+        tf: str,
+    ) -> tuple[list[float], list[float], list[float], list[float], list[float], list[str], int]:
         candle_target = int(preview_candle_target_by_tf.get(tf, 30))
-        raw_opens, raw_highs, raw_lows, raw_closes, raw_rows, requested_bounds = _market_fetch_ohlc(
+        raw_opens, raw_highs, raw_lows, raw_closes, raw_volumes, raw_timestamps, raw_rows, requested_bounds = _market_fetch_ohlcv(
             sym,
             tf,
             broker_hint=source_hint,
@@ -9538,6 +10583,17 @@ def _render_indicatorforge_preview_html(
         preview_highs = list(policy.highs)
         preview_lows = list(policy.lows)
         preview_closes = list(policy.closes)
+        used_count = len(preview_closes)
+        if used_count > 0 and len(raw_volumes) >= used_count:
+            if bool(policy.latest_excluded) and len(raw_volumes) >= used_count:
+                preview_volumes = list(raw_volumes[:used_count])
+                preview_timestamps = list(raw_timestamps[:used_count])
+            else:
+                preview_volumes = list(raw_volumes[-used_count:])
+                preview_timestamps = list(raw_timestamps[-used_count:])
+        else:
+            preview_volumes = [0.0] * used_count
+            preview_timestamps = [""] * used_count
         quote_appended = False
         if source_hint == "robinhood_crypto":
             quote = _market_fetch_crypto_quote(sym)
@@ -9548,6 +10604,8 @@ def _render_indicatorforge_preview_html(
                     preview_highs.append(q)
                     preview_lows.append(q)
                     preview_closes.append(q)
+                    preview_volumes.append(0.0)
+                    preview_timestamps.append(datetime.now(timezone.utc).isoformat())
                     quote_appended = True
                 elif abs(float(preview_closes[-1]) - q) > 1e-9:
                     prev_close = float(preview_closes[-1])
@@ -9555,6 +10613,8 @@ def _render_indicatorforge_preview_html(
                     preview_highs.append(max(prev_close, q))
                     preview_lows.append(min(prev_close, q))
                     preview_closes.append(q)
+                    preview_volumes.append(0.0)
+                    preview_timestamps.append(datetime.now(timezone.utc).isoformat())
                     quote_appended = True
                 else:
                     if preview_opens and preview_highs and preview_lows:
@@ -9599,20 +10659,35 @@ def _render_indicatorforge_preview_html(
             latest_excluded=policy.latest_excluded,
             final_signal="PENDING",
         )
-        return preview_opens, preview_highs, preview_lows, preview_closes, historical_count
+        return preview_opens, preview_highs, preview_lows, preview_closes, preview_volumes, preview_timestamps, historical_count
 
     if entangled_enabled:
         pair_label = f"{primary_symbol} (inverse {inverse_symbol})"
-        primary_ohlc_by_tf: dict[str, tuple[list[float], list[float], list[float], list[float]]] = {}
+        primary_ohlc_by_tf: dict[str, tuple[list[float], ...]] = {}
         primary_shortages: list[str] = []
         for tf in rules_by_tf:
-            primary_opens, primary_highs, primary_lows, primary_closes, primary_historical_count = _fetch_ohlc_for_preview(primary_symbol, tf)
+            (
+                primary_opens,
+                primary_highs,
+                primary_lows,
+                primary_closes,
+                primary_volumes,
+                primary_timestamps,
+                primary_historical_count,
+            ) = _fetch_ohlc_for_preview(primary_symbol, tf)
             primary_available_count = primary_historical_count if source_hint == "robinhood_crypto" else len(primary_closes)
             preview_eval_target = int(preview_eval_target_by_tf.get(tf, 30))
             if primary_available_count < preview_eval_target:
                 primary_shortages.append(f"{tf} need {preview_eval_target}, got {primary_available_count}")
                 continue
-            primary_ohlc_by_tf[tf] = (primary_opens, primary_highs, primary_lows, primary_closes)
+            primary_ohlc_by_tf[tf] = (
+                primary_opens,
+                primary_highs,
+                primary_lows,
+                primary_closes,
+                primary_volumes,
+                primary_timestamps,
+            )
         if primary_shortages:
             _render_no_data_row(
                 pair_label,
@@ -9623,7 +10698,7 @@ def _render_indicatorforge_preview_html(
             )
         else:
             primary_tf = tf_key if tf_key in primary_ohlc_by_tf else next(iter(primary_ohlc_by_tf.keys()))
-            primary_opens, primary_highs, primary_lows, primary_closes = primary_ohlc_by_tf[primary_tf]
+            primary_opens, primary_highs, primary_lows, primary_closes = primary_ohlc_by_tf[primary_tf][:4]
             primary_checks = _build_indicator_rule_checks_by_timeframe(
                 rules,
                 primary_ohlc_by_tf,
@@ -9654,16 +10729,16 @@ def _render_indicatorforge_preview_html(
             )
     else:
         for sym in syms:
-            ohlc_by_tf: dict[str, tuple[list[float], list[float], list[float], list[float]]] = {}
+            ohlc_by_tf: dict[str, tuple[list[float], ...]] = {}
             shortages: list[str] = []
             for tf in rules_by_tf:
-                opens, highs, lows, closes, historical_count = _fetch_ohlc_for_preview(sym, tf)
+                opens, highs, lows, closes, volumes, timestamps, historical_count = _fetch_ohlc_for_preview(sym, tf)
                 available_count = historical_count if source_hint == "robinhood_crypto" else len(closes)
                 preview_eval_target = int(preview_eval_target_by_tf.get(tf, 30))
                 if available_count < preview_eval_target:
                     shortages.append(f"{tf} need {preview_eval_target}, got {available_count}")
                     continue
-                ohlc_by_tf[tf] = (opens, highs, lows, closes)
+                ohlc_by_tf[tf] = (opens, highs, lows, closes, volumes, timestamps)
             if shortages:
                 _render_no_data_row(
                     sym,
@@ -9672,7 +10747,7 @@ def _render_indicatorforge_preview_html(
                 continue
 
             primary_tf = tf_key if tf_key in ohlc_by_tf else next(iter(ohlc_by_tf.keys()))
-            opens, highs, lows, closes = ohlc_by_tf[primary_tf]
+            opens, highs, lows, closes = ohlc_by_tf[primary_tf][:4]
             checks = _build_indicator_rule_checks_by_timeframe(
                 rules,
                 ohlc_by_tf,
@@ -10219,50 +11294,76 @@ def _render_indicatorforge_backtest_html(
             "</tr>"
         )
 
-    def _clean_backtest_closes(raw: Any) -> list[float]:
-        out: list[float] = []
-        if not isinstance(raw, list):
-            return out
-        for v in raw:
-            fv = _to_float_opt(v)
-            if fv is None or not math.isfinite(float(fv)) or float(fv) <= 0.0:
+    def _clean_backtest_ohlcv(
+        opens: list[float],
+        highs: list[float],
+        lows: list[float],
+        closes: list[float],
+        volumes: list[float],
+        timestamps: list[str],
+    ) -> tuple[list[float], list[float], list[float], list[float], list[float], list[str]]:
+        clean_o: list[float] = []
+        clean_h: list[float] = []
+        clean_l: list[float] = []
+        clean_c: list[float] = []
+        clean_v: list[float] = []
+        clean_t: list[str] = []
+        n = min(len(opens), len(highs), len(lows), len(closes))
+        for i in range(n):
+            o = _to_float_opt(opens[i])
+            h = _to_float_opt(highs[i])
+            l = _to_float_opt(lows[i])
+            c = _to_float_opt(closes[i])
+            if (
+                o is None
+                or h is None
+                or l is None
+                or c is None
+                or not math.isfinite(float(c))
+                or float(c) <= 0.0
+            ):
                 continue
-            out.append(float(fv))
-        return out
+            clean_o.append(float(o))
+            clean_h.append(float(h))
+            clean_l.append(float(l))
+            clean_c.append(float(c))
+            v = _to_float_opt(volumes[i] if i < len(volumes) else None)
+            clean_v.append(float(v) if v is not None and math.isfinite(float(v)) else 0.0)
+            clean_t.append(str(timestamps[i] if i < len(timestamps) else ""))
+        return clean_o, clean_h, clean_l, clean_c, clean_v, clean_t
 
-    def _fetch_backtest_closes_by_timeframe(sym: str, timeframe_keys: list[str]) -> dict[str, list[float]]:
-        out: dict[str, list[float]] = {}
+    def _fetch_backtest_ohlcv_by_timeframe(sym: str, timeframe_keys: list[str]) -> dict[str, tuple[list[float], ...]]:
+        out: dict[str, tuple[list[float], ...]] = {}
         for tf in timeframe_keys:
-            closes = _market_fetch_closes(
+            opens, highs, lows, closes, volumes, timestamps, _raw_rows, _requested_bounds = _market_fetch_ohlcv(
                 sym,
                 tf,
                 broker_hint=source_hint,
                 min_candles=int(fetch_target_by_tf.get(tf) or fetch_target),
                 include_extended=include_history_extended,
-                append_live_quote=False,
             )
-            out[tf] = _clean_backtest_closes(closes)
+            out[tf] = _clean_backtest_ohlcv(opens, highs, lows, closes, volumes, timestamps)
         return out
 
     def _simulate_rule_series_by_timeframe(
-        closes_by_tf: dict[str, list[float]],
+        ohlcv_by_tf: dict[str, tuple[list[float], ...]],
         *,
         forced_signals_by_offset: Optional[dict[int, str]] = None,
     ) -> dict[str, Any]:
-        if not closes_by_tf:
+        if not ohlcv_by_tf:
             return {
                 "ok": False,
                 "candles_fetched": 0,
                 "reason": "no candle data available",
             }
-        execution_tf = tf_key if tf_key in closes_by_tf else next(iter(closes_by_tf.keys()))
-        execution_closes = closes_by_tf.get(execution_tf) or []
+        execution_tf = tf_key if tf_key in ohlcv_by_tf else next(iter(ohlcv_by_tf.keys()))
+        execution_closes = list((ohlcv_by_tf.get(execution_tf) or ([], [], [], []))[3])
         required_execution = int(min_required_by_tf.get(execution_tf, min_required))
         rule_timeframes_for_eval = [] if forced_signals_by_offset is not None else list(rules_by_tf.keys())
         shortage_lines: list[str] = []
         for tf in rule_timeframes_for_eval:
             tf_rules = rules_by_tf.get(tf) or []
-            tf_closes = closes_by_tf.get(tf) or []
+            tf_closes = list((ohlcv_by_tf.get(tf) or ([], [], [], []))[3])
             tf_min_required = int(min_required_by_tf.get(tf, _indicator_rules_chart_config(tf_rules).get("min_required") or 30))
             if len(tf_closes) < (tf_min_required + 2):
                 shortage_lines.append(f"{tf} need >= {tf_min_required + 2}, got {len(tf_closes)}")
@@ -10280,7 +11381,7 @@ def _render_indicatorforge_backtest_html(
         eval_capacity = len(execution_closes) - 1 - required_execution
         for tf in rule_timeframes_for_eval:
             tf_rules = rules_by_tf.get(tf) or []
-            tf_closes = closes_by_tf.get(tf) or []
+            tf_closes = list((ohlcv_by_tf.get(tf) or ([], [], [], []))[3])
             tf_min_required = int(min_required_by_tf.get(tf, _indicator_rules_chart_config(tf_rules).get("min_required") or 30))
             eval_capacity = min(eval_capacity, len(tf_closes) - 1 - tf_min_required)
         if forced_signals_by_offset is not None and forced_signals_by_offset:
@@ -10312,14 +11413,26 @@ def _render_indicatorforge_backtest_html(
                 if signal not in ("BUY", "SELL", "HOLD"):
                     signal = "HOLD"
             else:
-                ohlc_windows: dict[str, tuple[list[float], list[float], list[float], list[float]]] = {}
+                ohlc_windows: dict[str, tuple[list[float], ...]] = {}
                 for tf in rules_by_tf:
-                    tf_closes = closes_by_tf.get(tf) or []
+                    tf_data = ohlcv_by_tf.get(tf) or ([], [], [], [], [], [])
+                    tf_opens = list(tf_data[0]) if len(tf_data) >= 1 else []
+                    tf_highs = list(tf_data[1]) if len(tf_data) >= 2 else []
+                    tf_lows = list(tf_data[2]) if len(tf_data) >= 3 else []
+                    tf_closes = list(tf_data[3]) if len(tf_data) >= 4 else []
+                    tf_volumes = list(tf_data[4]) if len(tf_data) >= 5 else []
+                    tf_timestamps = list(tf_data[5]) if len(tf_data) >= 6 else []
                     tf_end_idx = int(len(tf_closes) - 1 - offset_from_end)
                     if tf_end_idx < 1:
                         continue
-                    tf_window = tf_closes[: tf_end_idx + 1]
-                    ohlc_windows[tf] = _market_synthetic_ohlc_from_closes(tf_window)
+                    ohlc_windows[tf] = (
+                        tf_opens[: tf_end_idx + 1],
+                        tf_highs[: tf_end_idx + 1],
+                        tf_lows[: tf_end_idx + 1],
+                        tf_closes[: tf_end_idx + 1],
+                        tf_volumes[: tf_end_idx + 1],
+                        tf_timestamps[: tf_end_idx + 1],
+                    )
                 checks = _build_indicator_rule_checks_by_timeframe(
                     rules,
                     ohlc_windows,
@@ -10348,20 +11461,20 @@ def _render_indicatorforge_backtest_html(
         timeframe_keys = list(rules_by_tf.keys())
         if tf_key not in timeframe_keys:
             timeframe_keys = [tf_key] + timeframe_keys
-        primary_closes_by_tf = _fetch_backtest_closes_by_timeframe(primary_symbol, timeframe_keys)
-        inverse_closes_by_tf = _fetch_backtest_closes_by_timeframe(inverse_symbol, [tf_key])
-        primary_stats = _simulate_rule_series_by_timeframe(primary_closes_by_tf)
+        primary_ohlcv_by_tf = _fetch_backtest_ohlcv_by_timeframe(primary_symbol, timeframe_keys)
+        inverse_ohlcv_by_tf = _fetch_backtest_ohlcv_by_timeframe(inverse_symbol, [tf_key])
+        primary_stats = _simulate_rule_series_by_timeframe(primary_ohlcv_by_tf)
         primary_offsets = primary_stats.get("_signals_by_offset") if isinstance(primary_stats, dict) else {}
         if isinstance(primary_stats, dict) and bool(primary_stats.get("ok")) and isinstance(primary_offsets, dict):
             inverse_forced = {
                 int(offset): _invert_signal(signal)
                 for offset, signal in primary_offsets.items()
             }
-            inverse_stats = _simulate_rule_series_by_timeframe(inverse_closes_by_tf, forced_signals_by_offset=inverse_forced)
+            inverse_stats = _simulate_rule_series_by_timeframe(inverse_ohlcv_by_tf, forced_signals_by_offset=inverse_forced)
         else:
             inverse_stats = {
                 "ok": False,
-                "candles_fetched": len(inverse_closes_by_tf.get(tf_key) or []),
+                "candles_fetched": len((inverse_ohlcv_by_tf.get(tf_key) or ([], [], [], []))[3]),
                 "reason": "primary signal unavailable",
             }
         tf_note = "Rule timeframes: " + ", ".join(rules_by_tf.keys())
@@ -10369,11 +11482,11 @@ def _render_indicatorforge_backtest_html(
         inverse_note = f"Inverse follows opposite of {primary_symbol} on {tf_key}. {tf_note}."
         if source_hint == "robinhood":
             primary_short = [
-                f"{tf} returned {len(primary_closes_by_tf.get(tf) or [])}/{int(fetch_target_by_tf.get(tf) or fetch_target)}"
+                f"{tf} returned {len((primary_ohlcv_by_tf.get(tf) or ([], [], [], []))[3])}/{int(fetch_target_by_tf.get(tf) or fetch_target)}"
                 for tf in timeframe_keys
-                if len(primary_closes_by_tf.get(tf) or []) < int(fetch_target_by_tf.get(tf) or fetch_target)
+                if len((primary_ohlcv_by_tf.get(tf) or ([], [], [], []))[3]) < int(fetch_target_by_tf.get(tf) or fetch_target)
             ]
-            inverse_len = len(inverse_closes_by_tf.get(tf_key) or [])
+            inverse_len = len((inverse_ohlcv_by_tf.get(tf_key) or ([], [], [], []))[3])
             if primary_short:
                 primary_note += " Robinhood " + "; ".join(primary_short) + "."
             if inverse_len < fetch_target:
@@ -10385,8 +11498,8 @@ def _render_indicatorforge_backtest_html(
             timeframe_keys = list(rules_by_tf.keys())
             if tf_key not in timeframe_keys:
                 timeframe_keys = [tf_key] + timeframe_keys
-            closes_by_tf = _fetch_backtest_closes_by_timeframe(sym, timeframe_keys)
-            stats = _simulate_rule_series_by_timeframe(closes_by_tf)
+            ohlcv_by_tf = _fetch_backtest_ohlcv_by_timeframe(sym, timeframe_keys)
+            stats = _simulate_rule_series_by_timeframe(ohlcv_by_tf)
             note = ""
             if lookback_note:
                 note = lookback_note
@@ -10394,9 +11507,9 @@ def _render_indicatorforge_backtest_html(
             note = (note + " " if note else "") + tf_note + "."
             if source_hint == "robinhood":
                 short_parts = [
-                    f"{tf} returned {len(closes_by_tf.get(tf) or [])}/{int(fetch_target_by_tf.get(tf) or fetch_target)}"
+                    f"{tf} returned {len((ohlcv_by_tf.get(tf) or ([], [], [], []))[3])}/{int(fetch_target_by_tf.get(tf) or fetch_target)}"
                     for tf in timeframe_keys
-                    if len(closes_by_tf.get(tf) or []) < int(fetch_target_by_tf.get(tf) or fetch_target)
+                    if len((ohlcv_by_tf.get(tf) or ([], [], [], []))[3]) < int(fetch_target_by_tf.get(tf) or fetch_target)
                 ]
                 if short_parts:
                     note += " Robinhood " + "; ".join(short_parts) + "."
@@ -10564,6 +11677,14 @@ def _render_indicator_rules_html() -> str:
             kind = "ttm"
         if str(kind).strip().lower() in ("sar", "psar", "parabolic_sar", "parabolic"):
             kind = "sar"
+        if str(kind).strip().lower() in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+            kind = "donchian"
+        if str(kind).strip().lower() in ("supertrend", "supertrend_trend"):
+            kind = "supertrend"
+        if str(kind).strip().lower() in ("vwap", "vwap_filter"):
+            kind = "vwap"
+        if str(kind).strip().lower() in ("relative_volume", "rvol", "rel_volume"):
+            kind = "relative_volume"
         params = r.get("params") if isinstance(r.get("params"), dict) else {}
         timeframe = _rule_timeframe(r, "")
         tf_html = f"<span class='badge'>TF {html.escape(timeframe)}</span>" if timeframe else ""
@@ -10728,6 +11849,36 @@ def _render_indicator_rules_html() -> str:
                 f"step={_fmt_market_num(step,4)} max={_fmt_market_num(max_step,4)} "
                 f"buy={buy_cond} sell={sell_cond}"
             )
+        elif kind == "donchian":
+            lookback = max(1, int(_to_int_opt(params.get("lookback")) or 20))
+            default_buy = "high_above_upper" if bool(params.get("use_high_break")) else "close_above_upper"
+            buy_cond = _normalize_donchian_condition(params.get("buy_condition"), default=default_buy)
+            sell_cond = _normalize_donchian_condition(params.get("sell_condition"), default="close_below_lower")
+            cfg = f"lookback={lookback} buy={buy_cond} sell={sell_cond}"
+        elif kind == "supertrend":
+            atr_length = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
+            multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
+            buy_cond = _normalize_supertrend_condition(params.get("buy_condition"), default="trend_up")
+            sell_cond = _normalize_supertrend_condition(params.get("sell_condition"), default="trend_down")
+            cfg = f"atr={atr_length} mult={_fmt_market_num(multiplier,3)} buy={buy_cond} sell={sell_cond}"
+        elif kind == "vwap":
+            buy_cond = _normalize_vwap_condition(params.get("buy_condition"), default="within_band")
+            sell_cond = _normalize_vwap_condition(params.get("sell_condition"), default="exit_below")
+            max_extension = _indicator_pct_decimal(params.get("max_extension_pct"), default=0.015)
+            max_pullback = _indicator_pct_decimal(params.get("max_pullback_pct"), default=0.010)
+            exit_below = _indicator_pct_decimal(params.get("exit_below_pct"), default=0.012)
+            cfg = (
+                f"buy={buy_cond} sell={sell_cond} "
+                f"ext={_fmt_market_num(max_extension * 100.0,3)}% "
+                f"pull={_fmt_market_num(max_pullback * 100.0,3)}% "
+                f"exit={_fmt_market_num(exit_below * 100.0,3)}%"
+            )
+        elif kind == "relative_volume":
+            length = max(1, int(_to_int_opt(params.get("length")) or 20))
+            threshold = max(0.0, float(_to_float_opt(params.get("threshold")) or 1.2))
+            buy_cond = _normalize_relative_volume_condition(params.get("buy_condition"), default="above_threshold")
+            sell_cond = _normalize_relative_volume_condition(params.get("sell_condition"), default="below_threshold")
+            cfg = f"len={length} threshold={_fmt_market_num(threshold,3)} buy={buy_cond} sell={sell_cond}"
         enabled = bool(r.get("enabled"))
         st = "<span class='badge ok'>enabled</span>" if enabled else "<span class='badge warn'>disabled</span>"
         type_txt = html.escape(kind.upper())
@@ -10750,6 +11901,14 @@ def _render_indicator_rules_html() -> str:
             type_txt = "TTM"
         elif kind == "sar":
             type_txt = "SAR"
+        elif kind == "donchian":
+            type_txt = "DONCHIAN"
+        elif kind == "supertrend":
+            type_txt = "SUPERTREND"
+        elif kind == "vwap":
+            type_txt = "VWAP"
+        elif kind == "relative_volume":
+            type_txt = "RELATIVE VOLUME"
         out.append(
             "<tr>"
             f"<td><b>{html.escape(str(r.get('name') or ''))}</b></td>"
@@ -12640,6 +13799,56 @@ async def markets_rules_add(request: Request):
             "sell_condition": _normalize_sar_condition(form.get("sar_sell_condition"), default="hold"),
         }
         _save_rule(name or "Parabolic SAR", "sar", params)
+    elif k in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+        params = {
+            "lookback": max(1, int(_to_int_opt(form.get("donchian_lookback")) or 20)),
+            "buy_condition": _normalize_donchian_condition(
+                form.get("donchian_buy_condition"),
+                default="close_above_upper",
+            ),
+            "sell_condition": _normalize_donchian_condition(
+                form.get("donchian_sell_condition"),
+                default="close_below_lower",
+            ),
+        }
+        _save_rule(name or "Donchian Breakout", "donchian", params)
+    elif k in ("supertrend", "supertrend_trend"):
+        params = {
+            "atr_length": max(1, int(_to_int_opt(form.get("supertrend_atr_length")) or 10)),
+            "multiplier": max(0.1, float(_to_float_opt(form.get("supertrend_multiplier")) or 3.0)),
+            "buy_condition": _normalize_supertrend_condition(
+                form.get("supertrend_buy_condition"),
+                default="trend_up",
+            ),
+            "sell_condition": _normalize_supertrend_condition(
+                form.get("supertrend_sell_condition"),
+                default="trend_down",
+            ),
+        }
+        _save_rule(name or "Supertrend", "supertrend", params)
+    elif k in ("vwap", "vwap_filter"):
+        params = {
+            "buy_condition": _normalize_vwap_condition(form.get("vwap_buy_condition"), default="within_band"),
+            "sell_condition": _normalize_vwap_condition(form.get("vwap_sell_condition"), default="exit_below"),
+            "max_extension_pct": _indicator_pct_decimal(form.get("vwap_max_extension_pct"), default=0.015),
+            "max_pullback_pct": _indicator_pct_decimal(form.get("vwap_max_pullback_pct"), default=0.010),
+            "exit_below_pct": _indicator_pct_decimal(form.get("vwap_exit_below_pct"), default=0.012),
+        }
+        _save_rule(name or "VWAP Filter", "vwap", params)
+    elif k in ("relative_volume", "rvol", "rel_volume"):
+        params = {
+            "length": max(1, int(_to_int_opt(form.get("rvol_length")) or 20)),
+            "threshold": max(0.0, float(_to_float_opt(form.get("rvol_threshold")) or 1.2)),
+            "buy_condition": _normalize_relative_volume_condition(
+                form.get("rvol_buy_condition"),
+                default="above_threshold",
+            ),
+            "sell_condition": _normalize_relative_volume_condition(
+                form.get("rvol_sell_condition"),
+                default="below_threshold",
+            ),
+        }
+        _save_rule(name or "Relative Volume", "relative_volume", params)
     return RedirectResponse("/markets", status_code=303)
 
 
@@ -15172,9 +16381,9 @@ def run_status(run_id: int):
                 if source_hint in ("robinhood", "robinhood_crypto"):
                     ok_rh, _msg_rh = _ensure_robinhood_markets_session()
                     robinhood_markets_ok = bool(ok_rh)
-                fetched_closes_cache: dict[str, list[float]] = {}
+                fetched_ohlcv_cache: dict[str, tuple[list[float], ...]] = {}
                 chart_closes_cache: dict[str, list[float]] = {}
-                chart_ohlc_cache: dict[str, tuple[list[float], list[float], list[float], list[float]]] = {}
+                chart_ohlc_cache: dict[str, tuple[list[float], ...]] = {}
 
                 def _indicatorforge_runtime_chart(*, symbol: str, timeframe_key: str, chart: Any, price_hint: Any) -> str:
                     tf = _normalize_indicator_rule_timeframe(timeframe_key, default=market_tf)
@@ -15238,21 +16447,28 @@ def run_status(run_id: int):
                         if (not math.isfinite(fv)) or fv <= 0.0:
                             continue
                         closes.append(fv)
-                    ohlc: Optional[tuple[list[float], list[float], list[float], list[float]]] = None
+                    ohlc: Optional[tuple[list[float], ...]] = None
                     chart_opens = _chart_float_series(chart_obj.get("open"))
                     chart_highs = _chart_float_series(chart_obj.get("high"))
                     chart_lows = _chart_float_series(chart_obj.get("low"))
+                    chart_volumes = _chart_float_series(chart_obj.get("volume"))
+                    raw_timestamps = chart_obj.get("timestamp") or chart_obj.get("time") or chart_obj.get("begins_at")
+                    chart_timestamps = [str(v or "") for v in raw_timestamps] if isinstance(raw_timestamps, list) else []
                     if (
                         len(chart_opens) == len(closes)
                         and len(chart_highs) == len(closes)
                         and len(chart_lows) == len(closes)
                     ):
-                        ohlc = (chart_opens, chart_highs, chart_lows, list(closes))
+                        if len(chart_volumes) != len(closes):
+                            chart_volumes = [0.0] * len(closes)
+                        if len(chart_timestamps) != len(closes):
+                            chart_timestamps = [""] * len(closes)
+                        ohlc = (chart_opens, chart_highs, chart_lows, list(closes), chart_volumes, chart_timestamps)
                     if len(closes) < runtime_candle_target:
-                        fetched = fetched_closes_cache.get(cache_key)
-                        if fetched is None and (source_hint not in ("robinhood", "robinhood_crypto") or robinhood_markets_ok):
+                        fetched_ohlcv = fetched_ohlcv_cache.get(cache_key)
+                        if fetched_ohlcv is None and (source_hint not in ("robinhood", "robinhood_crypto") or robinhood_markets_ok):
                             try:
-                                fetched = _market_fetch_closes(
+                                fo, fh, fl, fc, fv, ft, _fr, _fb = _market_fetch_ohlcv(
                                     symbol_key,
                                     tf,
                                     broker_hint=source_hint,
@@ -15260,11 +16476,28 @@ def run_status(run_id: int):
                                     include_extended=include_history_extended,
                                 )
                             except Exception:
-                                fetched = []
-                            fetched_closes_cache[cache_key] = fetched
-                        if isinstance(fetched, list) and len(fetched) >= 2:
-                            closes = [float(x) for x in fetched if isinstance(x, (int, float)) and math.isfinite(float(x)) and float(x) > 0.0]
-                            ohlc = None
+                                fetched_ohlcv = ([], [], [], [], [], [])
+                            else:
+                                fetched_ohlcv = (fo, fh, fl, fc, fv, ft)
+                            fetched_ohlcv_cache[cache_key] = fetched_ohlcv
+                        if (
+                            isinstance(fetched_ohlcv, tuple)
+                            and len(fetched_ohlcv) >= 4
+                            and len(fetched_ohlcv[3]) >= 2
+                        ):
+                            n_fetch = min(len(fetched_ohlcv[0]), len(fetched_ohlcv[1]), len(fetched_ohlcv[2]), len(fetched_ohlcv[3]))
+                            fc = [
+                                float(x)
+                                for x in list(fetched_ohlcv[3])[:n_fetch]
+                                if isinstance(x, (int, float)) and math.isfinite(float(x)) and float(x) > 0.0
+                            ]
+                            closes = fc
+                            fo = list(fetched_ohlcv[0])[: len(fc)]
+                            fh = list(fetched_ohlcv[1])[: len(fc)]
+                            fl = list(fetched_ohlcv[2])[: len(fc)]
+                            fv = list(fetched_ohlcv[4])[: len(fc)] if len(fetched_ohlcv) >= 5 else [0.0] * len(fc)
+                            ft = list(fetched_ohlcv[5])[: len(fc)] if len(fetched_ohlcv) >= 6 else [""] * len(fc)
+                            ohlc = (fo, fh, fl, fc, fv, ft)
                     expected_last = _to_float(price_hint)
                     if expected_last is not None and expected_last > 0.0 and math.isfinite(expected_last):
                         if not closes:
@@ -15273,24 +16506,31 @@ def run_status(run_id: int):
                             prev_close = float(closes[-1])
                             closes.append(float(expected_last))
                             if ohlc is not None:
-                                o, h, l, c = ohlc
+                                o, h, l, c = ohlc[:4]
+                                v = list(ohlc[4]) if len(ohlc) >= 5 else []
+                                t = list(ohlc[5]) if len(ohlc) >= 6 else []
                                 o.append(prev_close)
                                 h.append(max(prev_close, float(expected_last)))
                                 l.append(min(prev_close, float(expected_last)))
                                 c.append(float(expected_last))
+                                v.append(0.0)
+                                t.append(datetime.now(timezone.utc).isoformat())
+                                ohlc = (o, h, l, c, v, t)
                         else:
                             closes[-1] = float(expected_last)
                             if ohlc is not None:
-                                o, h, l, c = ohlc
+                                o, h, l, c = ohlc[:4]
                                 c[-1] = float(expected_last)
                                 h[-1] = max(float(h[-1]), float(expected_last))
                                 l[-1] = min(float(l[-1]), float(expected_last))
                     closes = _trim_tail_outlier(closes, expected_last)
                     if ohlc is not None:
                         trim_len = len(closes)
-                        o, h, l, c = ohlc
+                        o, h, l, c = ohlc[:4]
+                        v = list(ohlc[4]) if len(ohlc) >= 5 else [0.0] * len(c)
+                        t = list(ohlc[5]) if len(ohlc) >= 6 else [""] * len(c)
                         if len(c) != trim_len:
-                            ohlc = (o[:trim_len], h[:trim_len], l[:trim_len], c[:trim_len])
+                            ohlc = (o[:trim_len], h[:trim_len], l[:trim_len], c[:trim_len], v[:trim_len], t[:trim_len])
                     if len(closes) < 2:
                         return "<span class='small'>—</span>"
                     if cache_key:
@@ -15300,8 +16540,12 @@ def run_status(run_id: int):
                     chart_opens_arg: Optional[list[float]] = None
                     chart_highs_arg: Optional[list[float]] = None
                     chart_lows_arg: Optional[list[float]] = None
+                    chart_volumes_arg: Optional[list[float]] = None
+                    chart_timestamps_arg: Optional[list[str]] = None
                     if ohlc is not None:
-                        chart_opens_arg, chart_highs_arg, chart_lows_arg, closes = ohlc
+                        chart_opens_arg, chart_highs_arg, chart_lows_arg, closes = ohlc[:4]
+                        chart_volumes_arg = list(ohlc[4]) if len(ohlc) >= 5 else None
+                        chart_timestamps_arg = list(ohlc[5]) if len(ohlc) >= 6 else None
                     return _market_chart_svg(
                         closes=closes,
                         opens=chart_opens_arg,
@@ -15326,6 +16570,12 @@ def run_status(run_id: int):
                         display_width=700,
                         display_height=220,
                         show_price_markers=True,
+                        volumes=chart_volumes_arg,
+                        timestamps=chart_timestamps_arg,
+                        donchian_lookbacks=runtime_chart_cfg.get("donchian_lookbacks") or [],
+                        supertrend_configs=runtime_chart_cfg.get("supertrend_configs") or [],
+                        vwap_enabled=bool(runtime_chart_cfg.get("has_vwap")),
+                        rvol_lengths=runtime_chart_cfg.get("rvol_lengths") or [],
                     )
 
                 def _indicatorforge_runtime_chart_row(*, symbol: str, chart: Any, charts_by_timeframe: Any, price_hint: Any) -> str:
@@ -15388,6 +16638,8 @@ def run_status(run_id: int):
                     try:
                         ohlc = chart_ohlc_cache.get(cache_key)
                         if ohlc is not None:
+                            ohlc_volumes = ohlc[4] if len(ohlc) >= 5 and isinstance(ohlc[4], list) else None
+                            ohlc_timestamps = ohlc[5] if len(ohlc) >= 6 and isinstance(ohlc[5], list) else None
                             refreshed = _eval_indicator_rule(
                                 rule,
                                 ohlc[3],
@@ -15395,6 +16647,8 @@ def run_status(run_id: int):
                                 opens=ohlc[0],
                                 highs=ohlc[1],
                                 lows=ohlc[2],
+                                volumes=ohlc_volumes,
+                                timestamps=ohlc_timestamps,
                             )
                         else:
                             refreshed = _eval_indicator_rule(rule, closes, float(px))

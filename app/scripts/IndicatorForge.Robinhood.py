@@ -926,11 +926,15 @@ def _fetch_historicals_like_schwab(
     return rows
 
 
-def _extract_ohlc(rows: List[Dict[str, Any]]) -> Tuple[List[float], List[float], List[float], List[float]]:
+def _extract_ohlcv(
+    rows: List[Dict[str, Any]],
+) -> Tuple[List[float], List[float], List[float], List[float], List[float], List[Any]]:
     opens: List[float] = []
     highs: List[float] = []
     lows: List[float] = []
     closes: List[float] = []
+    volumes: List[float] = []
+    timestamps: List[Any] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -961,10 +965,33 @@ def _extract_ohlc(rows: List[Dict[str, Any]]) -> Tuple[List[float], List[float],
             continue
         if o_val < l_val or o_val > h_val:
             continue
+        volume_val = 0.0
+        for key in ("volume", "volume_traded", "volume_traded_units", "session_volume", "total_volume"):
+            raw_volume = row.get(key)
+            parsed_volume = _to_float_opt(raw_volume)
+            if parsed_volume is not None:
+                parsed_volume_f = float(parsed_volume)
+                volume_val = max(0.0, parsed_volume_f) if math.isfinite(parsed_volume_f) else 0.0
+                break
+        ts_val = (
+            row.get("begins_at")
+            or row.get("beginsAt")
+            or row.get("datetime")
+            or row.get("time")
+            or row.get("timestamp")
+            or ""
+        )
         opens.append(o_val)
         highs.append(h_val)
         lows.append(l_val)
         closes.append(c_val)
+        volumes.append(volume_val)
+        timestamps.append(ts_val)
+    return opens, highs, lows, closes, volumes, timestamps
+
+
+def _extract_ohlc(rows: List[Dict[str, Any]]) -> Tuple[List[float], List[float], List[float], List[float]]:
+    opens, highs, lows, closes, _volumes, _timestamps = _extract_ohlcv(rows)
     return opens, highs, lows, closes
 
 
@@ -2941,6 +2968,453 @@ def _sar_condition_hit(
     return False
 
 
+def _normalize_donchian_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "breakout": "close_above_upper",
+        "close_breakout": "close_above_upper",
+        "upper_break": "close_above_upper",
+        "high_break": "high_above_upper",
+        "use_high_break": "high_above_upper",
+        "breakdown": "close_below_lower",
+        "close_breakdown": "close_below_lower",
+        "lower_break": "close_below_lower",
+        "low_break": "low_below_lower",
+    }
+    allowed = {
+        "hold",
+        "close_above_upper",
+        "high_above_upper",
+        "close_below_lower",
+        "low_below_lower",
+        "inside_channel",
+    }
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in allowed:
+        s = str(default or "hold").strip().lower()
+    return s if s in allowed else "hold"
+
+
+def _normalize_supertrend_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "up": "trend_up",
+        "down": "trend_down",
+        "bullish": "trend_up",
+        "bearish": "trend_down",
+        "price_above": "close_above_trend",
+        "price_below": "close_below_trend",
+        "cross_up": "flip_up",
+        "cross_down": "flip_down",
+    }
+    allowed = {
+        "hold",
+        "trend_up",
+        "trend_down",
+        "close_above_trend",
+        "close_below_trend",
+        "flip_up",
+        "flip_down",
+    }
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in allowed:
+        s = str(default or "hold").strip().lower()
+    return s if s in allowed else "hold"
+
+
+def _normalize_vwap_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "above": "price_above_vwap",
+        "below": "price_below_vwap",
+        "filter": "within_band",
+        "vwap_filter": "within_band",
+        "near_vwap": "within_band",
+        "not_overextended": "within_band",
+        "cross_up": "cross_above",
+        "cross_down": "cross_below",
+        "sell_below": "exit_below",
+    }
+    allowed = {
+        "hold",
+        "price_above_vwap",
+        "price_below_vwap",
+        "within_band",
+        "overextended_above",
+        "extended_below",
+        "cross_above",
+        "cross_below",
+        "exit_below",
+    }
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in allowed:
+        s = str(default or "hold").strip().lower()
+    return s if s in allowed else "hold"
+
+
+def _normalize_relative_volume_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "above": "above_threshold",
+        "below": "below_threshold",
+        "volume_spike": "above_threshold",
+        "spike": "above_threshold",
+        "increasing": "rising",
+        "decreasing": "falling",
+    }
+    allowed = {"hold", "above_threshold", "below_threshold", "rising", "falling"}
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in allowed:
+        s = str(default or "hold").strip().lower()
+    return s if s in allowed else "hold"
+
+
+def _indicator_pct_decimal(value: Any, *, default: float) -> float:
+    raw = _to_float_opt(value)
+    if raw is None:
+        return float(default)
+    out = float(raw)
+    if abs(out) > 1.0:
+        out = out / 100.0
+    return float(out)
+
+
+def _market_donchian_channels(
+    highs: Optional[List[float]],
+    lows: Optional[List[float]],
+    lookback: int,
+) -> Tuple[List[Optional[float]], List[Optional[float]]]:
+    n = min(len(highs or []), len(lows or []))
+    upper: List[Optional[float]] = [None] * n
+    lower: List[Optional[float]] = [None] * n
+    ln = max(1, int(lookback))
+    if n <= 1:
+        return upper, lower
+    try:
+        high_vals = [float(v) for v in (highs or [])[:n]]
+        low_vals = [float(v) for v in (lows or [])[:n]]
+    except Exception:
+        return upper, lower
+    for i in range(n):
+        start = max(0, i - ln)
+        if i - start < 1:
+            continue
+        upper[i] = max(high_vals[start:i])
+        lower[i] = min(low_vals[start:i])
+    return upper, lower
+
+
+def _donchian_condition_hit(
+    cond: str,
+    *,
+    close_now: float,
+    high_now: Optional[float],
+    low_now: Optional[float],
+    upper: float,
+    lower: float,
+) -> bool:
+    c = _normalize_donchian_condition(cond, default="hold")
+    if c == "close_above_upper":
+        return float(close_now) > float(upper)
+    if c == "high_above_upper":
+        return float(high_now if high_now is not None else close_now) > float(upper)
+    if c == "close_below_lower":
+        return float(close_now) < float(lower)
+    if c == "low_below_lower":
+        return float(low_now if low_now is not None else close_now) < float(lower)
+    if c == "inside_channel":
+        return float(lower) <= float(close_now) <= float(upper)
+    return False
+
+
+def _market_true_range_series(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+) -> List[Optional[float]]:
+    n = min(len(highs), len(lows), len(closes))
+    out: List[Optional[float]] = [None] * n
+    if n <= 0:
+        return out
+    try:
+        high_vals = [float(v) for v in highs[:n]]
+        low_vals = [float(v) for v in lows[:n]]
+        close_vals = [float(v) for v in closes[:n]]
+    except Exception:
+        return out
+    for i in range(n):
+        prev_close = close_vals[i - 1] if i > 0 else close_vals[i]
+        out[i] = max(
+            high_vals[i] - low_vals[i],
+            abs(high_vals[i] - prev_close),
+            abs(low_vals[i] - prev_close),
+        )
+    return out
+
+
+def _market_atr_series(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    length: int,
+) -> List[Optional[float]]:
+    ln = max(1, int(length))
+    tr = _market_true_range_series(highs, lows, closes)
+    out: List[Optional[float]] = [None] * len(tr)
+    if len(tr) < ln:
+        return out
+    for i in range(ln - 1, len(tr)):
+        window = [v for v in tr[i - ln + 1 : i + 1] if isinstance(v, (int, float))]
+        if len(window) == ln:
+            out[i] = float(sum(float(v) for v in window) / float(ln))
+    return out
+
+
+def _market_supertrend_series(
+    closes: List[float],
+    *,
+    highs: Optional[List[float]] = None,
+    lows: Optional[List[float]] = None,
+    atr_length: int = 10,
+    multiplier: float = 3.0,
+) -> Tuple[List[Optional[float]], List[Optional[float]]]:
+    n = len(closes)
+    trend: List[Optional[float]] = [None] * n
+    direction: List[Optional[float]] = [None] * n
+    final_upper: List[Optional[float]] = [None] * n
+    final_lower: List[Optional[float]] = [None] * n
+    if n <= 0:
+        return trend, direction
+    try:
+        close_vals = [float(v) for v in closes]
+        high_vals = [
+            float(highs[i]) if isinstance(highs, list) and i < len(highs) else float(close_vals[i])
+            for i in range(n)
+        ]
+        low_vals = [
+            float(lows[i]) if isinstance(lows, list) and i < len(lows) else float(close_vals[i])
+            for i in range(n)
+        ]
+    except Exception:
+        return trend, direction
+    atr_values = _market_atr_series(high_vals, low_vals, close_vals, max(1, int(atr_length)))
+    mult = max(0.1, float(multiplier))
+    for i in range(n):
+        atr_now = atr_values[i]
+        if atr_now is None:
+            continue
+        hl2 = (high_vals[i] + low_vals[i]) / 2.0
+        basic_upper = hl2 + (mult * float(atr_now))
+        basic_lower = hl2 - (mult * float(atr_now))
+        if i == 0 or final_upper[i - 1] is None or final_lower[i - 1] is None:
+            final_upper[i] = basic_upper
+            final_lower[i] = basic_lower
+            direction[i] = 1.0
+            trend[i] = final_lower[i]
+            continue
+        prev_close = close_vals[i - 1]
+        prev_upper = float(final_upper[i - 1])
+        prev_lower = float(final_lower[i - 1])
+        final_upper[i] = basic_upper if basic_upper < prev_upper or prev_close > prev_upper else prev_upper
+        final_lower[i] = basic_lower if basic_lower > prev_lower or prev_close < prev_lower else prev_lower
+        if close_vals[i] > prev_upper:
+            direction[i] = 1.0
+        elif close_vals[i] < prev_lower:
+            direction[i] = -1.0
+        else:
+            direction[i] = direction[i - 1] if direction[i - 1] is not None else 1.0
+        trend[i] = final_lower[i] if float(direction[i] or 0.0) >= 0.0 else final_upper[i]
+    return trend, direction
+
+
+def _supertrend_condition_hit(
+    cond: str,
+    *,
+    close_now: float,
+    trend_now: float,
+    direction_now: float,
+    direction_prev: Optional[float],
+) -> bool:
+    c = _normalize_supertrend_condition(cond, default="hold")
+    if c == "trend_up":
+        return float(direction_now) > 0.0
+    if c == "trend_down":
+        return float(direction_now) < 0.0
+    if c == "close_above_trend":
+        return float(close_now) > float(trend_now)
+    if c == "close_below_trend":
+        return float(close_now) < float(trend_now)
+    if c == "flip_up":
+        return direction_prev is not None and float(direction_prev) <= 0.0 and float(direction_now) > 0.0
+    if c == "flip_down":
+        return direction_prev is not None and float(direction_prev) >= 0.0 and float(direction_now) < 0.0
+    return False
+
+
+def _market_timestamp_day(raw: Any) -> str:
+    txt = str(raw or "").strip()
+    if not txt:
+        return "all"
+    if txt.isdigit() and len(txt) >= 10:
+        try:
+            sec = int(txt)
+            if sec > 10_000_000_000:
+                sec = int(sec / 1000)
+            return datetime.fromtimestamp(sec, tz=timezone.utc).date().isoformat()
+        except Exception:
+            return "all"
+    try:
+        parsed = datetime.fromisoformat(txt.replace("Z", "+00:00"))
+        return parsed.date().isoformat()
+    except Exception:
+        return txt[:10] if len(txt) >= 10 else "all"
+
+
+def _market_vwap_series(
+    closes: List[float],
+    *,
+    highs: Optional[List[float]] = None,
+    lows: Optional[List[float]] = None,
+    volumes: Optional[List[float]] = None,
+    timestamps: Optional[List[Any]] = None,
+) -> List[Optional[float]]:
+    n = len(closes)
+    out: List[Optional[float]] = [None] * n
+    if n <= 0 or not isinstance(volumes, list) or len(volumes) < n:
+        return out
+    try:
+        close_vals = [float(v) for v in closes]
+        high_vals = [
+            float(highs[i]) if isinstance(highs, list) and i < len(highs) else float(close_vals[i])
+            for i in range(n)
+        ]
+        low_vals = [
+            float(lows[i]) if isinstance(lows, list) and i < len(lows) else float(close_vals[i])
+            for i in range(n)
+        ]
+        volume_vals = [float(volumes[i]) for i in range(n)]
+    except Exception:
+        return out
+    if not any(v > 0.0 and math.isfinite(v) for v in volume_vals):
+        return out
+    cum_pv = 0.0
+    cum_vol = 0.0
+    current_day = ""
+    for i in range(n):
+        day = (
+            _market_timestamp_day(timestamps[i])
+            if isinstance(timestamps, list) and i < len(timestamps)
+            else "all"
+        )
+        if day != current_day:
+            current_day = day
+            cum_pv = 0.0
+            cum_vol = 0.0
+        vol = max(0.0, volume_vals[i])
+        if vol > 0.0 and math.isfinite(vol):
+            typical = (high_vals[i] + low_vals[i] + close_vals[i]) / 3.0
+            cum_pv += typical * vol
+            cum_vol += vol
+        if cum_vol > 0.0:
+            out[i] = cum_pv / cum_vol
+    return out
+
+
+def _vwap_condition_hit(
+    cond: str,
+    *,
+    close_now: float,
+    close_prev: Optional[float],
+    vwap_now: float,
+    vwap_prev: Optional[float],
+    max_extension_pct: float,
+    max_pullback_pct: float,
+    exit_below_pct: float,
+) -> bool:
+    c = _normalize_vwap_condition(cond, default="hold")
+    if c == "price_above_vwap":
+        return float(close_now) >= float(vwap_now)
+    if c == "price_below_vwap":
+        return float(close_now) <= float(vwap_now)
+    if c == "within_band":
+        return (
+            float(close_now) >= float(vwap_now) * (1.0 - float(max_pullback_pct))
+            and float(close_now) <= float(vwap_now) * (1.0 + float(max_extension_pct))
+        )
+    if c == "overextended_above":
+        return float(close_now) > float(vwap_now) * (1.0 + float(max_extension_pct))
+    if c == "extended_below":
+        return float(close_now) < float(vwap_now) * (1.0 - float(max_pullback_pct))
+    if c == "cross_above":
+        return (
+            close_prev is not None
+            and vwap_prev is not None
+            and float(close_prev) <= float(vwap_prev)
+            and float(close_now) > float(vwap_now)
+        )
+    if c == "cross_below":
+        return (
+            close_prev is not None
+            and vwap_prev is not None
+            and float(close_prev) >= float(vwap_prev)
+            and float(close_now) < float(vwap_now)
+        )
+    if c == "exit_below":
+        return float(close_now) < float(vwap_now) * (1.0 - float(exit_below_pct))
+    return False
+
+
+def _market_relative_volume_series(volumes: Optional[List[float]], length: int = 20) -> List[Optional[float]]:
+    if not isinstance(volumes, list):
+        return []
+    n = len(volumes)
+    ln = max(1, int(length))
+    out: List[Optional[float]] = [None] * n
+    try:
+        vals = [max(0.0, float(v)) for v in volumes]
+    except Exception:
+        return out
+    if n < ln or not any(v > 0.0 for v in vals):
+        return out
+    running = sum(vals[:ln])
+    avg = running / float(ln)
+    if avg > 0.0:
+        out[ln - 1] = vals[ln - 1] / avg
+    for i in range(ln, n):
+        running += vals[i] - vals[i - ln]
+        avg = running / float(ln)
+        if avg > 0.0:
+            out[i] = vals[i] / avg
+    return out
+
+
+def _relative_volume_condition_hit(
+    cond: str,
+    *,
+    rvol: float,
+    prev_rvol: Optional[float],
+    threshold: float,
+) -> bool:
+    c = _normalize_relative_volume_condition(cond, default="hold")
+    if c == "above_threshold":
+        return float(rvol) >= float(threshold)
+    if c == "below_threshold":
+        return float(rvol) <= float(threshold)
+    if c == "rising":
+        return prev_rvol is not None and float(rvol) > float(prev_rvol)
+    if c == "falling":
+        return prev_rvol is not None and float(rvol) < float(prev_rvol)
+    return False
+
+
 def _eval_rule(
     rule: Dict[str, Any],
     closes: List[float],
@@ -2949,6 +3423,8 @@ def _eval_rule(
     opens: Optional[List[float]] = None,
     highs: Optional[List[float]] = None,
     lows: Optional[List[float]] = None,
+    volumes: Optional[List[float]] = None,
+    timestamps: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     kind_raw = str(rule.get("kind") or "").strip().lower()
     if kind_raw in ("bollinger", "bollinger_bands"):
@@ -2961,6 +3437,14 @@ def _eval_rule(
         kind = "roc"
     elif kind_raw in ("sar", "psar", "parabolic_sar", "parabolic"):
         kind = "sar"
+    elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+        kind = "donchian"
+    elif kind_raw in ("supertrend", "supertrend_trend"):
+        kind = "supertrend"
+    elif kind_raw in ("vwap", "vwap_filter"):
+        kind = "vwap"
+    elif kind_raw in ("relative_volume", "rvol", "rel_volume"):
+        kind = "relative_volume"
     else:
         kind = kind_raw
     params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
@@ -3141,6 +3625,196 @@ def _eval_rule(
             out["detail"] = f"{dtag}{length}={_fmt(d_val, 4)}{unless_detail}"
         else:
             out["detail"] = unless_detail.strip()
+        return out
+
+    if kind == "donchian":
+        n = min(len(closes), len(highs or []), len(lows or []))
+        if n < 2:
+            out["detail"] = "Donchian unavailable (missing OHLC)"
+            return out
+        lookback = max(1, int(_to_int_opt(params.get("lookback")) or 20))
+        buy_cond = _normalize_donchian_condition(
+            params.get("buy_condition") or ("high_above_upper" if bool(params.get("use_high_break")) else "close_above_upper"),
+            default="hold",
+        )
+        sell_cond = _normalize_donchian_condition(params.get("sell_condition") or "close_below_lower", default="hold")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        upper_vals, lower_vals = _market_donchian_channels(highs[:n] if highs else None, lows[:n] if lows else None, lookback)
+        upper_now = upper_vals[-1] if upper_vals else None
+        lower_now = lower_vals[-1] if lower_vals else None
+        if upper_now is None or lower_now is None:
+            out["detail"] = f"Donchian({lookback}) unavailable"
+            return out
+        close_now = float(_to_float_opt(price) or closes[n - 1])
+        high_now = _to_float_opt(highs[n - 1]) if highs and n <= len(highs) else None
+        low_now = _to_float_opt(lows[n - 1]) if lows and n <= len(lows) else None
+        buy_ok = True if buy_ignored else _donchian_condition_hit(
+            buy_cond,
+            close_now=close_now,
+            high_now=high_now,
+            low_now=low_now,
+            upper=float(upper_now),
+            lower=float(lower_now),
+        )
+        sell_ok = True if sell_ignored else _donchian_condition_hit(
+            sell_cond,
+            close_now=close_now,
+            high_now=high_now,
+            low_now=low_now,
+            upper=float(upper_now),
+            lower=float(lower_now),
+        )
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        out["value"] = f"DON{lookback} U={_fmt(upper_now,4)} L={_fmt(lower_now,4)} P={_fmt(close_now,4)}"
+        out["detail"] = f"buy={buy_cond} sell={sell_cond}"
+        return out
+
+    if kind == "supertrend":
+        atr_length = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
+        multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
+        buy_cond = _normalize_supertrend_condition(params.get("buy_condition") or "trend_up", default="hold")
+        sell_cond = _normalize_supertrend_condition(params.get("sell_condition") or "trend_down", default="hold")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        trend_vals, direction_vals = _market_supertrend_series(
+            closes,
+            highs=highs,
+            lows=lows,
+            atr_length=atr_length,
+            multiplier=multiplier,
+        )
+        trend_now = trend_vals[-1] if trend_vals else None
+        direction_now = direction_vals[-1] if direction_vals else None
+        direction_prev = direction_vals[-2] if len(direction_vals) > 1 else None
+        if trend_now is None or direction_now is None:
+            out["detail"] = f"Supertrend({atr_length},{_fmt(multiplier,2)}) unavailable"
+            return out
+        close_now = float(_to_float_opt(price) or closes[-1])
+        buy_ok = True if buy_ignored else _supertrend_condition_hit(
+            buy_cond,
+            close_now=close_now,
+            trend_now=float(trend_now),
+            direction_now=float(direction_now),
+            direction_prev=direction_prev,
+        )
+        sell_ok = True if sell_ignored else _supertrend_condition_hit(
+            sell_cond,
+            close_now=close_now,
+            trend_now=float(trend_now),
+            direction_now=float(direction_now),
+            direction_prev=direction_prev,
+        )
+        trend_txt = "up" if float(direction_now) > 0.0 else "down"
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        out["value"] = f"ST={_fmt(trend_now,4)} P={_fmt(close_now,4)} trend={trend_txt}"
+        out["detail"] = f"buy={buy_cond} sell={sell_cond} atr={atr_length} mult={_fmt(multiplier,3)}"
+        return out
+
+    if kind == "vwap":
+        if not isinstance(volumes, list) or not any((float(v) > 0.0) for v in volumes if _to_float_opt(v) is not None):
+            out["detail"] = "VWAP unavailable: volume data unavailable"
+            return out
+        n = min(len(closes), len(volumes))
+        if n <= 0:
+            out["detail"] = "VWAP unavailable"
+            return out
+        buy_cond = _normalize_vwap_condition(params.get("buy_condition") or "within_band", default="hold")
+        sell_cond = _normalize_vwap_condition(params.get("sell_condition") or "exit_below", default="hold")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        max_extension_pct = max(0.0, _indicator_pct_decimal(params.get("max_extension_pct"), default=0.015))
+        max_pullback_pct = max(0.0, _indicator_pct_decimal(params.get("max_pullback_pct"), default=0.010))
+        exit_below_pct = max(0.0, _indicator_pct_decimal(params.get("exit_below_pct"), default=0.012))
+        vwap_vals = _market_vwap_series(
+            closes[:n],
+            highs=highs[:n] if isinstance(highs, list) else None,
+            lows=lows[:n] if isinstance(lows, list) else None,
+            volumes=volumes[:n],
+            timestamps=timestamps[:n] if isinstance(timestamps, list) else None,
+        )
+        vwap_now = vwap_vals[-1] if vwap_vals else None
+        vwap_prev = vwap_vals[-2] if len(vwap_vals) > 1 else None
+        if vwap_now is None:
+            out["detail"] = "VWAP unavailable: volume data unavailable"
+            return out
+        close_now = float(_to_float_opt(price) or closes[n - 1])
+        close_prev = float(closes[n - 2]) if n >= 2 else None
+        buy_ok = True if buy_ignored else _vwap_condition_hit(
+            buy_cond,
+            close_now=close_now,
+            close_prev=close_prev,
+            vwap_now=float(vwap_now),
+            vwap_prev=vwap_prev,
+            max_extension_pct=max_extension_pct,
+            max_pullback_pct=max_pullback_pct,
+            exit_below_pct=exit_below_pct,
+        )
+        sell_ok = True if sell_ignored else _vwap_condition_hit(
+            sell_cond,
+            close_now=close_now,
+            close_prev=close_prev,
+            vwap_now=float(vwap_now),
+            vwap_prev=vwap_prev,
+            max_extension_pct=max_extension_pct,
+            max_pullback_pct=max_pullback_pct,
+            exit_below_pct=exit_below_pct,
+        )
+        dist_pct = ((close_now - float(vwap_now)) / float(vwap_now) * 100.0) if float(vwap_now) else 0.0
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        out["value"] = f"VWAP={_fmt(vwap_now,4)} P={_fmt(close_now,4)} D={_fmt(dist_pct,3)}%"
+        out["detail"] = (
+            f"buy={buy_cond} sell={sell_cond} "
+            f"pullback={_fmt(max_pullback_pct * 100.0,3)}% "
+            f"extension={_fmt(max_extension_pct * 100.0,3)}% "
+            f"exit={_fmt(exit_below_pct * 100.0,3)}%"
+        )
+        return out
+
+    if kind == "relative_volume":
+        if not isinstance(volumes, list) or not any((float(v) > 0.0) for v in volumes if _to_float_opt(v) is not None):
+            out["detail"] = "RVOL unavailable: volume data unavailable"
+            return out
+        length = max(1, int(_to_int_opt(params.get("length")) or 20))
+        threshold = max(0.0, float(_to_float_opt(params.get("threshold")) or 1.2))
+        buy_cond = _normalize_relative_volume_condition(params.get("buy_condition") or "above_threshold", default="hold")
+        sell_cond = _normalize_relative_volume_condition(params.get("sell_condition") or "below_threshold", default="hold")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        n = min(len(closes), len(volumes))
+        rvol_vals = _market_relative_volume_series(volumes[:n], length=length)
+        rvol_now = rvol_vals[-1] if rvol_vals else None
+        prev_rvol = rvol_vals[-2] if len(rvol_vals) > 1 else None
+        if rvol_now is None:
+            out["detail"] = f"RVOL({length}) unavailable"
+            return out
+        buy_ok = True if buy_ignored else _relative_volume_condition_hit(
+            buy_cond,
+            rvol=float(rvol_now),
+            prev_rvol=prev_rvol,
+            threshold=threshold,
+        )
+        sell_ok = True if sell_ignored else _relative_volume_condition_hit(
+            sell_cond,
+            rvol=float(rvol_now),
+            prev_rvol=prev_rvol,
+            threshold=threshold,
+        )
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        out["value"] = f"RVOL{length}={_fmt(rvol_now,4)}"
+        out["detail"] = f"buy={buy_cond} sell={sell_cond} threshold={_fmt(threshold,3)} prev={_fmt(prev_rvol,4)}"
         return out
 
     if kind == "bb":
@@ -3629,8 +4303,10 @@ def _build_chart_series(
     opens: Optional[List[float]] = None,
     highs: Optional[List[float]] = None,
     lows: Optional[List[float]] = None,
+    volumes: Optional[List[float]] = None,
+    timestamps: Optional[List[Any]] = None,
     max_points: int = CHART_POINTS,
-) -> Dict[str, List[Optional[float]]]:
+) -> Dict[str, List[Any]]:
     if not prices:
         return {}
 
@@ -3651,9 +4327,11 @@ def _build_chart_series(
     chart_opens = [float(v) for v in opens] if isinstance(opens, list) and len(opens) == len(prices) else None
     chart_highs = [float(v) for v in highs] if isinstance(highs, list) and len(highs) == len(prices) else None
     chart_lows = [float(v) for v in lows] if isinstance(lows, list) and len(lows) == len(prices) else None
+    chart_volumes = [float(v) for v in volumes] if isinstance(volumes, list) and len(volumes) == len(prices) else None
+    chart_timestamps = list(timestamps) if isinstance(timestamps, list) and len(timestamps) == len(prices) else None
 
-    def _payload(start: int = 0) -> Dict[str, List[Optional[float]]]:
-        payload: Dict[str, List[Optional[float]]] = {
+    def _payload(start: int = 0) -> Dict[str, List[Any]]:
+        payload: Dict[str, List[Any]] = {
             "price": [float(p) for p in prices[start:]],
             "ma20": ma20[start:],
             "ma78": ma78[start:],
@@ -3663,6 +4341,10 @@ def _build_chart_series(
             payload["open"] = chart_opens[start:]
             payload["high"] = chart_highs[start:]
             payload["low"] = chart_lows[start:]
+        if chart_volumes is not None:
+            payload["volume"] = chart_volumes[start:]
+        if chart_timestamps is not None:
+            payload["timestamp"] = chart_timestamps[start:]
         return payload
 
     if max_points > 0 and len(prices) > max_points:
@@ -3936,9 +4618,34 @@ def _normalize_inline_rules(obj: Any) -> List[Dict[str, Any]]:
             kind = "roc"
         elif kind_raw in ("sar", "psar", "parabolic_sar", "parabolic"):
             kind = "sar"
+        elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+            kind = "donchian"
+        elif kind_raw in ("supertrend", "supertrend_trend"):
+            kind = "supertrend"
+        elif kind_raw in ("vwap", "vwap_filter"):
+            kind = "vwap"
+        elif kind_raw in ("relative_volume", "rvol", "rel_volume"):
+            kind = "relative_volume"
         else:
             kind = kind_raw
-        if kind not in ("ma", "ema", "rsi", "rsi_d", "macd", "heikin_ashi", "ha", "bb", "ichimoku", "ttm", "roc", "sar"):
+        if kind not in (
+            "ma",
+            "ema",
+            "rsi",
+            "rsi_d",
+            "macd",
+            "heikin_ashi",
+            "ha",
+            "bb",
+            "ichimoku",
+            "ttm",
+            "roc",
+            "sar",
+            "donchian",
+            "supertrend",
+            "vwap",
+            "relative_volume",
+        ):
             continue
         params = item.get("params") if isinstance(item.get("params"), dict) else {}
         rule = {
@@ -4029,9 +4736,13 @@ def _rule_min_candles(rules: List[Dict[str, Any]]) -> int:
     longest_ttm = 0
     longest_roc = 0
     longest_sar = 0
+    longest_donchian = 0
+    longest_supertrend = 0
+    longest_rvol = 0
     need_rsi = False
     need_drsi = False
     need_ha = False
+    need_vwap = False
 
     for rule in rules:
         if not isinstance(rule, dict):
@@ -4047,6 +4758,14 @@ def _rule_min_candles(rules: List[Dict[str, Any]]) -> int:
             kind = "roc"
         elif kind_raw in ("sar", "psar", "parabolic_sar", "parabolic"):
             kind = "sar"
+        elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
+            kind = "donchian"
+        elif kind_raw in ("supertrend", "supertrend_trend"):
+            kind = "supertrend"
+        elif kind_raw in ("vwap", "vwap_filter"):
+            kind = "vwap"
+        elif kind_raw in ("relative_volume", "rvol", "rel_volume"):
+            kind = "relative_volume"
         else:
             kind = kind_raw
         params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
@@ -4110,6 +4829,17 @@ def _rule_min_candles(rules: List[Dict[str, Any]]) -> int:
             longest_roc = max(longest_roc, ln + 2)
         elif kind == "sar":
             longest_sar = max(longest_sar, 3)
+        elif kind == "donchian":
+            ln = max(1, int(_to_int_opt(params.get("lookback")) or 20))
+            longest_donchian = max(longest_donchian, ln + 2)
+        elif kind == "supertrend":
+            atr_len = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
+            longest_supertrend = max(longest_supertrend, atr_len + 3)
+        elif kind == "vwap":
+            need_vwap = True
+        elif kind == "relative_volume":
+            ln = max(1, int(_to_int_opt(params.get("length")) or 20))
+            longest_rvol = max(longest_rvol, ln + 1)
         elif kind in ("heikin_ashi", "ha"):
             need_ha = True
 
@@ -4125,9 +4855,13 @@ def _rule_min_candles(rules: List[Dict[str, Any]]) -> int:
         longest_ttm,
         longest_roc,
         longest_sar,
+        longest_donchian,
+        longest_supertrend,
+        longest_rvol,
         15 if need_rsi else 0,
         17 if need_drsi else 0,
         2 if need_ha else 0,
+        2 if need_vwap else 0,
     )
 
 
@@ -4632,7 +5366,7 @@ def main_trading_loop(
                 }
                 fetch_timeframes = list(dict.fromkeys([timeframe] + list(rules_by_tf.keys())))
                 hist_by_tf: Dict[str, List[Dict[str, Any]]] = {}
-                ohlc_by_tf: Dict[str, Tuple[List[float], List[float], List[float], List[float]]] = {}
+                ohlc_by_tf: Dict[str, Tuple[List[float], List[float], List[float], List[float], List[float], List[Any]]] = {}
                 policy_by_tf: Dict[str, Any] = {}
                 fetched_count_by_tf: Dict[str, int] = {}
                 live_candle_appended_by_tf: Dict[str, bool] = {}
@@ -4682,7 +5416,7 @@ def main_trading_loop(
                             overnight_history_meta["synthetic_rows_merged"] = int(merged_count)
                             overnight_history_meta["synthetic_merged_latest_ts"] = merged_latest_ts
 
-                    tf_opens, tf_highs, tf_lows, tf_closes = _extract_ohlc(hist_tf)
+                    tf_opens, tf_highs, tf_lows, tf_closes, tf_volumes, tf_timestamps = _extract_ohlcv(hist_tf)
                     if len(tf_closes) < tf_min:
                         missing_tf_reasons.append(f"{tf_key}: got {len(tf_closes)}, need {tf_min}")
                         continue
@@ -4702,6 +5436,8 @@ def main_trading_loop(
                         tf_highs.append(max(prev_close, cur))
                         tf_lows.append(min(prev_close, cur))
                         tf_closes.append(cur)
+                        tf_volumes.append(0.0)
+                        tf_timestamps.append(iso_now())
                         live_appended = True
 
                     policy_tf = apply_final_candle_policy(
@@ -4717,6 +5453,8 @@ def main_trading_loop(
                         policy_tf.lows,
                         policy_tf.closes,
                     )
+                    tf_volumes = tf_volumes[: len(tf_closes)]
+                    tf_timestamps = tf_timestamps[: len(tf_closes)]
                     if live_appended and len(tf_closes) <= fetched_count_by_tf[tf_key]:
                         print(f"[{symbol}] CURRENT_CANDLE_UNAVAILABLE timeframe={tf_key}")
                     if len(tf_closes) < tf_min:
@@ -4725,7 +5463,7 @@ def main_trading_loop(
                         )
                         continue
                     hist_by_tf[tf_key] = hist_tf
-                    ohlc_by_tf[tf_key] = (tf_opens, tf_highs, tf_lows, tf_closes)
+                    ohlc_by_tf[tf_key] = (tf_opens, tf_highs, tf_lows, tf_closes, tf_volumes, tf_timestamps)
                     policy_by_tf[tf_key] = policy_tf
                     live_candle_appended_by_tf[tf_key] = live_appended
 
@@ -4735,7 +5473,7 @@ def main_trading_loop(
                     continue
 
                 default_ohlc = ohlc_by_tf.get(timeframe) or next(iter(ohlc_by_tf.values()))
-                opens, highs, lows, closes = default_ohlc
+                opens, highs, lows, closes, volumes, timestamps = default_ohlc
                 hist = hist_by_tf.get(timeframe) or next(iter(hist_by_tf.values()))
                 policy = policy_by_tf.get(timeframe) or next(iter(policy_by_tf.values()))
                 fetched_count = int(fetched_count_by_tf.get(timeframe, len(closes)))
@@ -4771,7 +5509,7 @@ def main_trading_loop(
                     rule_ohlc = ohlc_by_tf.get(rule_tf)
                     if rule_ohlc is None:
                         continue
-                    rule_opens, rule_highs, rule_lows, rule_closes = rule_ohlc
+                    rule_opens, rule_highs, rule_lows, rule_closes, rule_volumes, rule_timestamps = rule_ohlc
                     c = _eval_rule(
                         r,
                         rule_closes,
@@ -4779,6 +5517,8 @@ def main_trading_loop(
                         opens=rule_opens,
                         highs=rule_highs,
                         lows=rule_lows,
+                        volumes=rule_volumes,
+                        timestamps=rule_timestamps,
                     )
                     rule_params = r.get("params") if isinstance(r.get("params"), dict) else {}
                     base_name = str(c.get("name") or r.get("name") or str(r.get("kind") or "").upper())
@@ -4978,7 +5718,18 @@ def main_trading_loop(
                         "rsi": rsi,
                         "rsi_d": drsi,
                         "atr": atr,
-                        "chart": _build_chart_series(closes, opens=opens, highs=highs, lows=lows) if status_writer is not None else {},
+                        "chart": (
+                            _build_chart_series(
+                                closes,
+                                opens=opens,
+                                highs=highs,
+                                lows=lows,
+                                volumes=volumes,
+                                timestamps=timestamps,
+                            )
+                            if status_writer is not None
+                            else {}
+                        ),
                         "charts_by_timeframe": (
                             {
                                 tf_key: _build_chart_series(
@@ -4986,6 +5737,8 @@ def main_trading_loop(
                                     opens=tf_ohlc[0],
                                     highs=tf_ohlc[1],
                                     lows=tf_ohlc[2],
+                                    volumes=tf_ohlc[4],
+                                    timestamps=tf_ohlc[5],
                                 )
                                 for tf_key, tf_ohlc in ohlc_by_tf.items()
                                 if tf_key in rules_by_tf

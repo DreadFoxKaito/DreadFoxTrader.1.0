@@ -314,6 +314,101 @@
         </div>
 
         <div class="card" style="padding:10px;">
+          <div class="small"><b>Add Donchian Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="donchian" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="donchian_lookback" type="number" min="1" step="1" value="20" placeholder="Lookback" style="width:110px;" />
+            <select name="donchian_buy_condition">
+              <option value="close_above_upper" selected>BUY: close above upper</option>
+              <option value="high_above_upper">BUY: high breaks upper</option>
+              <option value="inside_channel">BUY: inside channel</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+            <select name="donchian_sell_condition">
+              <option value="close_below_lower" selected>SELL: close below lower</option>
+              <option value="low_below_lower">SELL: low breaks lower</option>
+              <option value="inside_channel">SELL: inside channel</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+            <div class="small">Donchian channels use the prior bars only, so the current candle is not included in its own breakout channel.</div>
+            <button class="btn primary" type="submit">Save Donchian Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add Supertrend Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="supertrend" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="supertrend_atr_length" type="number" min="1" step="1" value="10" placeholder="ATR length" style="width:120px;" />
+            <input name="supertrend_multiplier" type="number" min="0.1" step="0.1" value="3.0" placeholder="Multiplier" style="width:120px;" />
+            <select name="supertrend_buy_condition">
+              <option value="trend_up" selected>BUY: trend up</option>
+              <option value="close_above_trend">BUY: close above trend</option>
+              <option value="flip_up">BUY: flip up</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+            <select name="supertrend_sell_condition">
+              <option value="trend_down" selected>SELL: trend down</option>
+              <option value="close_below_trend">SELL: close below trend</option>
+              <option value="flip_down">SELL: flip down</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+            <div class="small">Supertrend uses ATR bands and trend direction to confirm continuation or flips.</div>
+            <button class="btn primary" type="submit">Save Supertrend Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add VWAP Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="vwap" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <select name="vwap_buy_condition">
+              <option value="within_band" selected>BUY: near VWAP band</option>
+              <option value="price_above_vwap">BUY: price above VWAP</option>
+              <option value="cross_above">BUY: crosses above VWAP</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+            <select name="vwap_sell_condition">
+              <option value="exit_below" selected>SELL: below exit band</option>
+              <option value="price_below_vwap">SELL: price below VWAP</option>
+              <option value="cross_below">SELL: crosses below VWAP</option>
+              <option value="overextended_above">SELL: overextended above</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+            <input name="vwap_max_extension_pct" type="number" step="0.001" value="0.015" placeholder="Max extension decimal" style="width:180px;" />
+            <input name="vwap_max_pullback_pct" type="number" step="0.001" value="0.010" placeholder="Max pullback decimal" style="width:180px;" />
+            <input name="vwap_exit_below_pct" type="number" step="0.001" value="0.012" placeholder="Exit below decimal" style="width:170px;" />
+            <div class="small">VWAP requires volume from the broker feed. Decimal fields accept 0.015 for 1.5%; whole percentages like 1.5 are also accepted.</div>
+            <button class="btn primary" type="submit">Save VWAP Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
+          <div class="small"><b>Add Relative Volume Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="relative_volume" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <input name="rvol_length" type="number" min="1" step="1" value="20" placeholder="Average length" style="width:140px;" />
+            <input name="rvol_threshold" type="number" min="0" step="0.1" value="1.2" placeholder="Threshold" style="width:120px;" />
+            <select name="rvol_buy_condition">
+              <option value="above_threshold" selected>BUY: above threshold</option>
+              <option value="rising">BUY: rising</option>
+              <option value="hold">BUY: hold</option>
+            </select>
+            <select name="rvol_sell_condition">
+              <option value="below_threshold" selected>SELL: below threshold</option>
+              <option value="falling">SELL: falling</option>
+              <option value="hold">SELL: hold</option>
+            </select>
+            <div class="small">Relative Volume compares the latest candle volume to its moving average.</div>
+            <button class="btn primary" type="submit">Save Relative Volume Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
           <div class="small"><b>Add Bollinger Bands Rule</b></div>
           <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
             <input type="hidden" name="kind" value="bb" />
