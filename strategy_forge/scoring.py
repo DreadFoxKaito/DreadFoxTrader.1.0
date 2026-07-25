@@ -12,6 +12,14 @@ def normalize_positive(value: float, target: float) -> float:
     return clamp(float(value) / float(target)) if target else 0.0
 
 
+def normalize_profit_factor_edge(value: float) -> float:
+    return clamp((min(max(float(value), 0.0), 5.0) - 1.0) / 3.0)
+
+
+def normalize_win_rate_edge(value: float) -> float:
+    return clamp((float(value) - 0.50) / 0.35)
+
+
 def normalize_return(value: float) -> float:
     return clamp((float(value) + 0.10) / 0.60)
 
@@ -56,17 +64,17 @@ def score_metrics(metrics: dict[str, Any], *, profile: str = "balanced", instabi
     components = {
         "normalized_net_return": normalize_return(total_return),
         "normalized_sortino": normalize_positive(sortino, 4.0),
-        "normalized_profit_factor": normalize_positive(min(pf, 5.0), 3.0),
-        "normalized_win_rate": clamp(win_rate),
+        "normalized_profit_factor": normalize_profit_factor_edge(pf),
+        "normalized_win_rate": normalize_win_rate_edge(win_rate),
         "normalized_max_drawdown": normalize_drawdown(max_dd),
         "turnover_penalty": clamp(turnover / 0.20),
         "instability_penalty": clamp(instability_penalty),
     }
     score = (
-        0.30 * components["normalized_net_return"]
-        + 0.25 * components["normalized_sortino"]
-        + 0.20 * components["normalized_profit_factor"]
-        + 0.10 * components["normalized_win_rate"]
+        0.24 * components["normalized_net_return"]
+        + 0.18 * components["normalized_sortino"]
+        + 0.28 * components["normalized_profit_factor"]
+        + 0.22 * components["normalized_win_rate"]
         - 0.30 * components["normalized_max_drawdown"]
         - 0.15 * components["turnover_penalty"]
         - 0.25 * components["instability_penalty"]

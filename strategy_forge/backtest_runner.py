@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date
 from statistics import mean
@@ -153,8 +154,110 @@ def _combo_rule_id(rule: dict[str, Any], index: int) -> str:
     return str(rule.get("id") or f"{rule.get('kind') or 'rule'}_{index + 1}")
 
 
+def _combo_rule_timeframe(rule: dict[str, Any], default_timeframe: str) -> str:
+    params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
+    tf = str(rule.get("timeframe") or params.get("timeframe") or default_timeframe or "").strip().lower()
+    aliases = {
+        "1min": "1m",
+        "1minute": "1m",
+        "5min": "5m",
+        "5minute": "5m",
+        "10min": "10m",
+        "10minute": "10m",
+        "15min": "15m",
+        "15minute": "15m",
+        "30min": "30m",
+        "30minute": "30m",
+        "60m": "1h",
+        "1hour": "1h",
+        "hour": "1h",
+        "1day": "1d",
+        "day": "1d",
+        "daily": "1d",
+    }
+    return aliases.get(tf, tf or str(default_timeframe or "1h").strip().lower())
+
+
+def _combo_rule_timeframes(candidate: StrategyCandidate, default_timeframe: str) -> list[str]:
+    out: list[str] = []
+    for rule in _combo_rules(candidate):
+        tf = _combo_rule_timeframe(rule, default_timeframe)
+        if tf not in out:
+            out.append(tf)
+    return out or [str(default_timeframe or "1h").strip().lower()]
+
+
+def _timestamp_seconds(data: OHLCVData) -> list[Optional[float]]:
+    out: list[Optional[float]] = []
+    for ts in data.timestamps:
+        parsed = parse_timestamp(ts)
+        out.append(parsed.timestamp() if parsed else None)
+    return out
+
+
+def _build_timeframe_alignment(execution_data: OHLCVData, rule_data: OHLCVData) -> list[int]:
+    if len(rule_data) <= 0:
+        return []
+    if rule_data is execution_data or (
+        str(rule_data.timeframe).lower() == str(execution_data.timeframe).lower()
+        and list(rule_data.timestamps) == list(execution_data.timestamps)
+    ):
+        return [min(i, len(rule_data) - 1) for i in range(len(execution_data))]
+
+    rule_times = _timestamp_seconds(rule_data)
+    exec_times = _timestamp_seconds(execution_data)
+    valid_pairs = [(float(ts), idx) for idx, ts in enumerate(rule_times) if ts is not None]
+    if not valid_pairs or not any(ts is not None for ts in exec_times):
+        return [
+            min(len(rule_data) - 1, int(round((i / max(1, len(execution_data) - 1)) * (len(rule_data) - 1))))
+            for i in range(len(execution_data))
+        ]
+
+    valid_pairs.sort(key=lambda item: item[0])
+    sorted_times = [item[0] for item in valid_pairs]
+    sorted_indices = [item[1] for item in valid_pairs]
+    alignment: list[int] = []
+    for i, ts in enumerate(exec_times):
+        if ts is None:
+            alignment.append(min(i, len(rule_data) - 1))
+            continue
+        pos = bisect_right(sorted_times, float(ts)) - 1
+        alignment.append(-1 if pos < 0 else sorted_indices[pos])
+    return alignment
+
+
+def _combo_context_for_rule(indicators: dict[str, Any], rule: dict[str, Any]) -> dict[str, Any]:
+    default_tf = str(indicators.get("execution_timeframe") or "").strip().lower()
+    tf = _combo_rule_timeframe(rule, default_tf)
+    by_tf = indicators.get("combo_by_timeframe")
+    if isinstance(by_tf, dict):
+        ctx = by_tf.get(tf)
+        if isinstance(ctx, dict):
+            return ctx
+    return {"data": indicators.get("execution_data"), "combo": indicators.get("combo") or {}, "alignment": None}
+
+
+def _combo_data_and_index(
+    data: OHLCVData,
+    indicators: dict[str, Any],
+    rule: dict[str, Any],
+    execution_index: int,
+) -> tuple[OHLCVData, int]:
+    ctx = _combo_context_for_rule(indicators, rule)
+    rule_data = ctx.get("data")
+    rule_data = rule_data if isinstance(rule_data, OHLCVData) else data
+    alignment = ctx.get("alignment")
+    if isinstance(alignment, list) and 0 <= int(execution_index) < len(alignment):
+        idx = int(alignment[int(execution_index)])
+    else:
+        idx = int(execution_index)
+    idx = max(0, min(idx, len(rule_data) - 1 if len(rule_data) else 0))
+    return rule_data, idx
+
+
 def _combo_value(indicators: dict[str, Any], rule: dict[str, Any], key: str, index: int) -> float:
-    combo = indicators.get("combo")
+    ctx = _combo_context_for_rule(indicators, rule)
+    combo = ctx.get("combo")
     if not isinstance(combo, dict):
         return float("nan")
     values = combo.get(str(rule.get("id") or ""))
@@ -163,13 +266,24 @@ def _combo_value(indicators: dict[str, Any], rule: dict[str, Any], key: str, ind
     series = values.get(key)
     if series is None:
         return float("nan")
+    alignment = ctx.get("alignment")
+    value_index = int(index)
+    if isinstance(alignment, list) and 0 <= int(index) < len(alignment):
+        value_index = int(alignment[int(index)])
+    if value_index < 0:
+        return float("nan")
     try:
-        return float(series[index])
+        return float(series[value_index])
     except Exception:
         return float("nan")
 
 
-def _compute_indicators(data: OHLCVData, candidate: StrategyCandidate) -> dict[str, Any]:
+def _compute_indicators(
+    data: OHLCVData,
+    candidate: StrategyCandidate,
+    *,
+    data_by_timeframe: Optional[dict[str, OHLCVData]] = None,
+) -> dict[str, Any]:
     p = candidate.parameters
     cache = IndicatorCache(data)
     out: dict[str, Any] = {
@@ -179,55 +293,111 @@ def _compute_indicators(data: OHLCVData, candidate: StrategyCandidate) -> dict[s
     ma_type = str(p.get("ma_type") or "ema")
     if _is_combo_candidate(candidate):
         out["atr"] = cache.get("atr", length=int(p.get("atr_length") or 14))
+        out["execution_data"] = data
+        out["execution_timeframe"] = str(data.timeframe or candidate.timeframe or "").strip().lower()
         out["combo"] = {}
-        for idx, rule in enumerate(_combo_rules(candidate)):
-            rule_id = _combo_rule_id(rule, idx)
-            rule["id"] = rule_id
-            kind = str(rule.get("kind") or "").lower()
-            params = dict(rule.get("params") or {})
-            values: dict[str, Any] = {}
-            if kind == "ma_cross":
-                values["fast_ma"] = cache.get(
-                    "ma",
-                    length=int(params.get("fast") or 12),
-                    ma_type=str(params.get("ma_type") or "ema"),
-                )
-                values["slow_ma"] = cache.get(
-                    "ma",
-                    length=int(params.get("slow") or 26),
-                    ma_type=str(params.get("ma_type") or "ema"),
-                )
-            elif kind == "rsi_momentum":
-                values["rsi"] = cache.get("rsi", length=int(params.get("length") or 14))
-            elif kind == "macd_momentum":
-                values["macd"], values["macd_signal"], values["macd_hist"] = cache.get(
-                    "macd",
-                    fast=int(params.get("fast") or 12),
-                    slow=int(params.get("slow") or 26),
-                    signal=int(params.get("signal") or 9),
-                )
-            elif kind in {"bollinger_pullback", "bollinger_breakout"}:
-                values["bb_middle"], values["bb_upper"], values["bb_lower"], values["percent_b"] = cache.get(
-                    "bollinger",
-                    length=int(params.get("length") or 20),
-                    std_mult=float(params.get("std_mult") or 2.0),
-                )
-            elif kind == "donchian_breakout":
-                values["donchian_high"], values["donchian_low"] = cache.get(
-                    "donchian",
-                    lookback=int(params.get("lookback") or 20),
-                )
-            elif kind == "supertrend_trend":
-                values["supertrend"], values["supertrend_direction"] = cache.get(
-                    "supertrend",
-                    atr_length=int(params.get("atr_length") or 10),
-                    multiplier=float(params.get("multiplier") or 3.0),
-                )
-            elif kind == "vwap_filter":
-                values["vwap"] = cache.get("vwap")
-            elif kind == "relative_volume":
-                values["relative_volume"] = cache.get("relative_volume", length=int(params.get("length") or 20))
-            out["combo"][rule_id] = values
+        sources: dict[str, OHLCVData] = {str(data.timeframe).strip().lower(): data}
+        for tf, tf_data in (data_by_timeframe or {}).items():
+            if isinstance(tf_data, OHLCVData) and len(tf_data) > 0:
+                sources[str(tf or tf_data.timeframe).strip().lower()] = tf_data
+                sources[str(tf_data.timeframe).strip().lower()] = tf_data
+        out["combo_by_timeframe"] = {}
+        for tf in _combo_rule_timeframes(candidate, str(data.timeframe or candidate.timeframe or "1h")):
+            tf_data = sources.get(tf) or data
+            tf_cache = cache if tf_data is data else IndicatorCache(tf_data)
+            combo_values: dict[str, Any] = {}
+            for idx, rule in enumerate(_combo_rules(candidate)):
+                rule_id = _combo_rule_id(rule, idx)
+                rule["id"] = rule_id
+                if _combo_rule_timeframe(rule, str(data.timeframe or candidate.timeframe or "1h")) != tf:
+                    continue
+                kind = str(rule.get("kind") or "").lower()
+                params = dict(rule.get("params") or {})
+                values: dict[str, Any] = {}
+                if kind == "ma_cross":
+                    values["fast_ma"] = tf_cache.get(
+                        "ma",
+                        length=int(params.get("fast") or 12),
+                        ma_type=str(params.get("ma_type") or "ema"),
+                    )
+                    values["slow_ma"] = tf_cache.get(
+                        "ma",
+                        length=int(params.get("slow") or 26),
+                        ma_type=str(params.get("ma_type") or "ema"),
+                    )
+                elif kind == "rsi_momentum":
+                    values["rsi"] = tf_cache.get("rsi", length=int(params.get("length") or 14))
+                elif kind == "rsi_derivative":
+                    values["rsi_derivative"] = tf_cache.get("rsi_derivative", length=int(params.get("length") or 14))
+                elif kind == "macd_momentum":
+                    values["macd"], values["macd_signal"], values["macd_hist"] = tf_cache.get(
+                        "macd",
+                        fast=int(params.get("fast") or 12),
+                        slow=int(params.get("slow") or 26),
+                        signal=int(params.get("signal") or 9),
+                    )
+                elif kind in {"bollinger_pullback", "bollinger_breakout"}:
+                    values["bb_middle"], values["bb_upper"], values["bb_lower"], values["percent_b"] = tf_cache.get(
+                        "bollinger",
+                        length=int(params.get("length") or 20),
+                        std_mult=float(params.get("std_mult") or 2.0),
+                    )
+                elif kind == "donchian_breakout":
+                    values["donchian_high"], values["donchian_low"] = tf_cache.get(
+                        "donchian",
+                        lookback=int(params.get("lookback") or 20),
+                    )
+                elif kind == "supertrend_trend":
+                    values["supertrend"], values["supertrend_direction"] = tf_cache.get(
+                        "supertrend",
+                        atr_length=int(params.get("atr_length") or 10),
+                        multiplier=float(params.get("multiplier") or 3.0),
+                    )
+                elif kind == "vwap_filter":
+                    values["vwap"] = tf_cache.get("vwap")
+                elif kind == "relative_volume":
+                    values["relative_volume"] = tf_cache.get("relative_volume", length=int(params.get("length") or 20))
+                elif kind == "roc_momentum":
+                    values["roc"] = tf_cache.get("roc", length=int(params.get("length") or 12))
+                elif kind == "sar_trend":
+                    values["sar"], values["sar_direction"] = tf_cache.get(
+                        "sar",
+                        step=float(params.get("step") or 0.02),
+                        max_step=float(params.get("max_step") or 0.2),
+                    )
+                elif kind == "ichimoku_trend":
+                    values.update(
+                        tf_cache.get(
+                            "ichimoku",
+                            tenkan=int(params.get("tenkan") or 9),
+                            kijun=int(params.get("kijun") or 26),
+                            senkou_b=int(params.get("senkou_b") or 52),
+                        )
+                    )
+                elif kind == "ttm_squeeze":
+                    values.update(
+                        tf_cache.get(
+                            "ttm",
+                            bb_length=int(params.get("bb_length") or 20),
+                            bb_mult=float(params.get("bb_mult") or 2.0),
+                            kc_length=int(params.get("kc_length") or 20),
+                            kc_mult=float(params.get("kc_mult") or 1.5),
+                            momentum_length=int(params.get("momentum_length") or 20),
+                        )
+                    )
+                elif kind == "heikin_ashi_trend":
+                    values.update(tf_cache.get("heikin_ashi"))
+                combo_values[rule_id] = values
+            alignment = None if tf_data is data else _build_timeframe_alignment(data, tf_data)
+            out["combo_by_timeframe"][tf] = {
+                "data": tf_data,
+                "combo": combo_values,
+                "alignment": alignment,
+            }
+        exec_tf = str(data.timeframe).strip().lower()
+        exec_ctx = out["combo_by_timeframe"].get(exec_tf)
+        if isinstance(exec_ctx, dict) and isinstance(exec_ctx.get("combo"), dict):
+            out["combo"] = exec_ctx["combo"]
         return out
 
     if name in {"ema_rsi_atr_trend", "ema_macd_atr_trend"}:
@@ -289,10 +459,199 @@ def _atr_derivative(indicators: dict[str, Any], index: int) -> float:
     return atr_now - atr_prev
 
 
+def _combo_roc_condition_hit(cond: str, roc: float, prev_roc: float, threshold: float) -> bool:
+    if not is_valid(roc):
+        return False
+    c = str(cond or "").strip().lower()
+    has_prev = is_valid(prev_roc)
+    if c == "roc_above_threshold":
+        return roc >= float(threshold)
+    if c == "roc_below_threshold":
+        return roc <= float(threshold)
+    if c == "roc_cross_up_zero":
+        return has_prev and prev_roc <= 0.0 < roc
+    if c == "roc_cross_down_zero":
+        return has_prev and prev_roc >= 0.0 > roc
+    if c == "roc_cross_up_threshold":
+        return has_prev and prev_roc <= float(threshold) < roc
+    if c == "roc_cross_down_threshold":
+        return has_prev and prev_roc >= float(threshold) > roc
+    if c == "roc_increasing":
+        return has_prev and roc > prev_roc
+    if c == "roc_decreasing":
+        return has_prev and roc < prev_roc
+    if c == "roc_positive":
+        return roc > 0.0
+    if c == "roc_negative":
+        return roc < 0.0
+    if c == "momentum_long":
+        return has_prev and roc > 0.0 and roc > prev_roc
+    if c == "momentum_short":
+        return has_prev and roc < 0.0 and roc < prev_roc
+    return False
+
+
+def _combo_sar_condition_hit(
+    cond: str,
+    *,
+    close: float,
+    prev_close: float,
+    sar: float,
+    prev_sar: float,
+    direction: float,
+) -> bool:
+    if not is_valid(sar):
+        return False
+    c = str(cond or "").strip().lower()
+    has_prev = is_valid(prev_close) and is_valid(prev_sar)
+    if c == "price_above_sar":
+        return close > sar
+    if c == "price_below_sar":
+        return close < sar
+    if c == "sar_cross_up":
+        return has_prev and prev_close <= prev_sar and close > sar
+    if c == "sar_cross_down":
+        return has_prev and prev_close >= prev_sar and close < sar
+    if c == "sar_rising":
+        return is_valid(prev_sar) and sar > prev_sar
+    if c == "sar_falling":
+        return is_valid(prev_sar) and sar < prev_sar
+    if c == "trend_long":
+        return is_valid(direction) and direction > 0.0 and close > sar
+    if c == "trend_short":
+        return is_valid(direction) and direction < 0.0 and close < sar
+    return False
+
+
+def _combo_ichimoku_condition_hit(
+    cond: str,
+    *,
+    close: float,
+    prev_close: float,
+    tenkan: float,
+    prev_tenkan: float,
+    kijun: float,
+    prev_kijun: float,
+    span_a: float,
+    span_b: float,
+    cloud_top: float,
+    cloud_bottom: float,
+) -> bool:
+    c = str(cond or "").strip().lower()
+    has_cloud = is_valid(cloud_top) and is_valid(cloud_bottom)
+    has_cross = is_valid(prev_tenkan) and is_valid(prev_kijun)
+    cloud_bullish = is_valid(span_a) and is_valid(span_b) and span_a > span_b
+    cloud_bearish = is_valid(span_a) and is_valid(span_b) and span_a < span_b
+    if c == "price_above_cloud":
+        return has_cloud and close > cloud_top
+    if c == "price_below_cloud":
+        return has_cloud and close < cloud_bottom
+    if c == "cloud_bullish":
+        return cloud_bullish
+    if c == "cloud_bearish":
+        return cloud_bearish
+    if c == "tenkan_above_kijun":
+        return is_valid(tenkan) and is_valid(kijun) and tenkan > kijun
+    if c == "tenkan_below_kijun":
+        return is_valid(tenkan) and is_valid(kijun) and tenkan < kijun
+    if c == "tenkan_cross_above":
+        return has_cross and prev_tenkan <= prev_kijun and tenkan > kijun
+    if c == "tenkan_cross_below":
+        return has_cross and prev_tenkan >= prev_kijun and tenkan < kijun
+    if c == "full_bullish_stack":
+        return is_valid(tenkan) and is_valid(kijun) and close > tenkan > kijun
+    if c == "full_bearish_stack":
+        return is_valid(tenkan) and is_valid(kijun) and close < tenkan < kijun
+    if c == "partial_bullish_stack":
+        checks = [
+            is_valid(tenkan) and close > tenkan,
+            is_valid(tenkan) and is_valid(kijun) and tenkan > kijun,
+            has_cloud and close > cloud_top,
+        ]
+        return sum(1 for ok in checks if ok) >= 2
+    if c == "partial_bearish_stack":
+        checks = [
+            is_valid(tenkan) and close < tenkan,
+            is_valid(tenkan) and is_valid(kijun) and tenkan < kijun,
+            has_cloud and close < cloud_bottom,
+        ]
+        return sum(1 for ok in checks if ok) >= 2
+    if c == "strong_long_confirm":
+        return (
+            is_valid(tenkan)
+            and is_valid(kijun)
+            and has_cloud
+            and tenkan > kijun
+            and close > cloud_top
+            and (cloud_bullish or not is_valid(span_a) or not is_valid(span_b))
+        )
+    if c == "strong_short_confirm":
+        return (
+            is_valid(tenkan)
+            and is_valid(kijun)
+            and has_cloud
+            and tenkan < kijun
+            and close < cloud_bottom
+            and (cloud_bearish or not is_valid(span_a) or not is_valid(span_b))
+        )
+    return False
+
+
+def _combo_ttm_condition_hit(cond: str, indicators: dict[str, Any], rule: dict[str, Any], index: int) -> bool:
+    c = str(cond or "").strip().lower()
+    squeeze_on = _combo_value(indicators, rule, "ttm_squeeze_on", index)
+    squeeze_fired = _combo_value(indicators, rule, "ttm_squeeze_fired", index)
+    momentum = _combo_value(indicators, rule, "ttm_momentum", index)
+    prev_momentum = _combo_value(indicators, rule, "ttm_momentum", index - 1) if index > 0 else float("nan")
+    momentum_delta = _combo_value(indicators, rule, "ttm_momentum_delta", index)
+    if c == "squeeze_on":
+        return is_valid(squeeze_on) and squeeze_on > 0.0
+    if c == "squeeze_off":
+        return is_valid(squeeze_on) and squeeze_on <= 0.0
+    if c == "squeeze_fired":
+        return is_valid(squeeze_fired) and squeeze_fired > 0.0
+    if c == "momentum_above_zero":
+        return is_valid(momentum) and momentum > 0.0
+    if c == "momentum_below_zero":
+        return is_valid(momentum) and momentum < 0.0
+    if c == "momentum_increasing":
+        return is_valid(momentum_delta) and momentum_delta > 0.0
+    if c == "momentum_decreasing":
+        return is_valid(momentum_delta) and momentum_delta < 0.0
+    if c == "momentum_cross_up":
+        return is_valid(prev_momentum) and is_valid(momentum) and prev_momentum <= 0.0 < momentum
+    if c == "momentum_cross_down":
+        return is_valid(prev_momentum) and is_valid(momentum) and prev_momentum >= 0.0 > momentum
+    if c == "long_trend":
+        return (
+            is_valid(squeeze_on)
+            and squeeze_on <= 0.0
+            and is_valid(momentum)
+            and momentum > 0.0
+            and is_valid(momentum_delta)
+            and momentum_delta > 0.0
+        )
+    if c == "short_trend":
+        return (
+            is_valid(squeeze_on)
+            and squeeze_on <= 0.0
+            and is_valid(momentum)
+            and momentum < 0.0
+            and is_valid(momentum_delta)
+            and momentum_delta < 0.0
+        )
+    if c == "long_release":
+        return is_valid(squeeze_fired) and squeeze_fired > 0.0 and is_valid(momentum) and momentum > 0.0
+    if c == "short_release":
+        return is_valid(squeeze_fired) and squeeze_fired > 0.0 and is_valid(momentum) and momentum < 0.0
+    return False
+
+
 def _combo_rule_entry_signal(rule: dict[str, Any], data: OHLCVData, indicators: dict[str, Any], index: int) -> bool:
     kind = str(rule.get("kind") or "").lower()
     params = dict(rule.get("params") or {})
-    close = float(data.closes[index])
+    rule_data, rule_index = _combo_data_and_index(data, indicators, rule, index)
+    close = float(rule_data.closes[rule_index])
     if kind == "ma_cross":
         fast = _combo_value(indicators, rule, "fast_ma", index)
         slow = _combo_value(indicators, rule, "slow_ma", index)
@@ -300,6 +659,9 @@ def _combo_rule_entry_signal(rule: dict[str, Any], data: OHLCVData, indicators: 
     if kind == "rsi_momentum":
         rsi_now = _combo_value(indicators, rule, "rsi", index)
         return is_valid(rsi_now) and rsi_now >= float(params.get("entry_min") or 55)
+    if kind == "rsi_derivative":
+        drsi = _combo_value(indicators, rule, "rsi_derivative", index)
+        return is_valid(drsi) and drsi >= float(params.get("buy_above") or 0.0)
     if kind == "macd_momentum":
         macd_now = _combo_value(indicators, rule, "macd", index)
         signal = _combo_value(indicators, rule, "macd_signal", index)
@@ -322,7 +684,7 @@ def _combo_rule_entry_signal(rule: dict[str, Any], data: OHLCVData, indicators: 
         if not is_valid(high_channel):
             return False
         if bool(params.get("use_high_break")):
-            return float(data.highs[index]) > high_channel
+            return float(rule_data.highs[rule_index]) > high_channel
         return close > high_channel
     if kind == "supertrend_trend":
         trend = _combo_value(indicators, rule, "supertrend", index)
@@ -338,13 +700,70 @@ def _combo_rule_entry_signal(rule: dict[str, Any], data: OHLCVData, indicators: 
     if kind == "relative_volume":
         rv = _combo_value(indicators, rule, "relative_volume", index)
         return is_valid(rv) and rv >= float(params.get("threshold") or 1.2)
+    if kind == "roc_momentum":
+        roc = _combo_value(indicators, rule, "roc", index)
+        prev_roc = _combo_value(indicators, rule, "roc", index - 1) if index > 0 else float("nan")
+        return _combo_roc_condition_hit(
+            str(params.get("buy_condition") or "momentum_long"),
+            roc,
+            prev_roc,
+            float(params.get("buy_threshold_pct") or 0.0),
+        )
+    if kind == "sar_trend":
+        sar = _combo_value(indicators, rule, "sar", index)
+        prev_sar = _combo_value(indicators, rule, "sar", index - 1) if index > 0 else float("nan")
+        prev_close = float(rule_data.closes[max(0, rule_index - 1)]) if rule_index > 0 else float("nan")
+        direction = _combo_value(indicators, rule, "sar_direction", index)
+        return _combo_sar_condition_hit(
+            str(params.get("buy_condition") or "trend_long"),
+            close=close,
+            prev_close=prev_close,
+            sar=sar,
+            prev_sar=prev_sar,
+            direction=direction,
+        )
+    if kind == "ichimoku_trend":
+        tenkan = _combo_value(indicators, rule, "ichimoku_tenkan", index)
+        kijun = _combo_value(indicators, rule, "ichimoku_kijun", index)
+        span_a = _combo_value(indicators, rule, "ichimoku_span_a", index)
+        span_b = _combo_value(indicators, rule, "ichimoku_span_b", index)
+        top = _combo_value(indicators, rule, "ichimoku_cloud_top", index)
+        bottom = _combo_value(indicators, rule, "ichimoku_cloud_bottom", index)
+        prev_tenkan = _combo_value(indicators, rule, "ichimoku_tenkan", index - 1) if index > 0 else float("nan")
+        prev_kijun = _combo_value(indicators, rule, "ichimoku_kijun", index - 1) if index > 0 else float("nan")
+        prev_close = float(rule_data.closes[max(0, rule_index - 1)]) if rule_index > 0 else float("nan")
+        return _combo_ichimoku_condition_hit(
+            str(params.get("buy_condition") or "strong_long_confirm"),
+            close=close,
+            prev_close=prev_close,
+            tenkan=tenkan,
+            prev_tenkan=prev_tenkan,
+            kijun=kijun,
+            prev_kijun=prev_kijun,
+            span_a=span_a,
+            span_b=span_b,
+            cloud_top=top,
+            cloud_bottom=bottom,
+        )
+    if kind == "ttm_squeeze":
+        return _combo_ttm_condition_hit(str(params.get("buy_condition") or "long_release"), indicators, rule, index)
+    if kind == "heikin_ashi_trend":
+        direction = _combo_value(indicators, rule, "ha_direction", index)
+        prev_direction = _combo_value(indicators, rule, "ha_direction", index - 1) if index > 0 else float("nan")
+        body_pct = _combo_value(indicators, rule, "ha_body_pct", index)
+        if is_valid(body_pct) and body_pct < float(params.get("doji_tolerance_pct") or 0.0):
+            return False
+        if str(params.get("mode") or "transition") == "state":
+            return is_valid(direction) and direction > 0.0
+        return is_valid(prev_direction) and is_valid(direction) and prev_direction <= 0.0 < direction
     return False
 
 
 def _combo_rule_exit_signal(rule: dict[str, Any], data: OHLCVData, indicators: dict[str, Any], index: int) -> bool:
     kind = str(rule.get("kind") or "").lower()
     params = dict(rule.get("params") or {})
-    close = float(data.closes[index])
+    rule_data, rule_index = _combo_data_and_index(data, indicators, rule, index)
+    close = float(rule_data.closes[rule_index])
     if kind == "ma_cross":
         fast = _combo_value(indicators, rule, "fast_ma", index)
         slow = _combo_value(indicators, rule, "slow_ma", index)
@@ -352,6 +771,9 @@ def _combo_rule_exit_signal(rule: dict[str, Any], data: OHLCVData, indicators: d
     if kind == "rsi_momentum":
         rsi_now = _combo_value(indicators, rule, "rsi", index)
         return is_valid(rsi_now) and rsi_now <= float(params.get("exit_below") or 45)
+    if kind == "rsi_derivative":
+        drsi = _combo_value(indicators, rule, "rsi_derivative", index)
+        return is_valid(drsi) and drsi <= float(params.get("sell_below") or 0.0)
     if kind == "macd_momentum":
         macd_now = _combo_value(indicators, rule, "macd", index)
         signal = _combo_value(indicators, rule, "macd_signal", index)
@@ -374,6 +796,67 @@ def _combo_rule_exit_signal(rule: dict[str, Any], data: OHLCVData, indicators: d
     if kind == "vwap_filter":
         vw = _combo_value(indicators, rule, "vwap", index)
         return is_valid(vw) and close < vw * (1.0 - float(params.get("exit_below_pct") or 0.012))
+    if kind == "relative_volume":
+        rv = _combo_value(indicators, rule, "relative_volume", index)
+        prev_rv = _combo_value(indicators, rule, "relative_volume", index - 1) if index > 0 else float("nan")
+        threshold = float(params.get("threshold") or 1.2)
+        return is_valid(rv) and (rv <= threshold or (is_valid(prev_rv) and rv < prev_rv))
+    if kind == "roc_momentum":
+        roc = _combo_value(indicators, rule, "roc", index)
+        prev_roc = _combo_value(indicators, rule, "roc", index - 1) if index > 0 else float("nan")
+        return _combo_roc_condition_hit(
+            str(params.get("sell_condition") or "momentum_short"),
+            roc,
+            prev_roc,
+            float(params.get("sell_threshold_pct") or 0.0),
+        )
+    if kind == "sar_trend":
+        sar = _combo_value(indicators, rule, "sar", index)
+        prev_sar = _combo_value(indicators, rule, "sar", index - 1) if index > 0 else float("nan")
+        prev_close = float(rule_data.closes[max(0, rule_index - 1)]) if rule_index > 0 else float("nan")
+        direction = _combo_value(indicators, rule, "sar_direction", index)
+        return _combo_sar_condition_hit(
+            str(params.get("sell_condition") or "trend_short"),
+            close=close,
+            prev_close=prev_close,
+            sar=sar,
+            prev_sar=prev_sar,
+            direction=direction,
+        )
+    if kind == "ichimoku_trend":
+        tenkan = _combo_value(indicators, rule, "ichimoku_tenkan", index)
+        kijun = _combo_value(indicators, rule, "ichimoku_kijun", index)
+        span_a = _combo_value(indicators, rule, "ichimoku_span_a", index)
+        span_b = _combo_value(indicators, rule, "ichimoku_span_b", index)
+        top = _combo_value(indicators, rule, "ichimoku_cloud_top", index)
+        bottom = _combo_value(indicators, rule, "ichimoku_cloud_bottom", index)
+        prev_tenkan = _combo_value(indicators, rule, "ichimoku_tenkan", index - 1) if index > 0 else float("nan")
+        prev_kijun = _combo_value(indicators, rule, "ichimoku_kijun", index - 1) if index > 0 else float("nan")
+        prev_close = float(rule_data.closes[max(0, rule_index - 1)]) if rule_index > 0 else float("nan")
+        return _combo_ichimoku_condition_hit(
+            str(params.get("sell_condition") or "strong_short_confirm"),
+            close=close,
+            prev_close=prev_close,
+            tenkan=tenkan,
+            prev_tenkan=prev_tenkan,
+            kijun=kijun,
+            prev_kijun=prev_kijun,
+            span_a=span_a,
+            span_b=span_b,
+            cloud_top=top,
+            cloud_bottom=bottom,
+        )
+    if kind == "ttm_squeeze":
+        return _combo_ttm_condition_hit(str(params.get("sell_condition") or "short_release"), indicators, rule, index)
+    if kind == "heikin_ashi_trend":
+        direction = _combo_value(indicators, rule, "ha_direction", index)
+        prev_direction = _combo_value(indicators, rule, "ha_direction", index - 1) if index > 0 else float("nan")
+        body_pct = _combo_value(indicators, rule, "ha_body_pct", index)
+        if is_valid(body_pct) and body_pct < float(params.get("doji_tolerance_pct") or 0.0):
+            return False
+        if str(params.get("mode") or "transition") == "state":
+            return is_valid(direction) and direction < 0.0
+        return is_valid(prev_direction) and is_valid(direction) and prev_direction >= 0.0 > direction
     return False
 
 
@@ -539,14 +1022,20 @@ def _regime_list(indicators: dict[str, Any], index: int) -> list[str]:
         return []
 
 
-def run_backtest(data: OHLCVData, candidate: StrategyCandidate, config: Optional[BacktestConfig] = None) -> BacktestResult:
+def run_backtest(
+    data: OHLCVData,
+    candidate: StrategyCandidate,
+    config: Optional[BacktestConfig] = None,
+    *,
+    data_by_timeframe: Optional[dict[str, OHLCVData]] = None,
+) -> BacktestResult:
     if config is None:
         config = BacktestConfig()
     if len(data) < 5:
         metrics = {"ok": False, "reason": "insufficient candles", "trade_count": 0}
         return BacktestResult(candidate, data.symbol, data.timeframe, metrics, [], [])
 
-    indicators = _compute_indicators(data, candidate)
+    indicators = _compute_indicators(data, candidate, data_by_timeframe=data_by_timeframe)
     cash = float(config.initial_capital)
     position_qty = 0.0
     entry_price = 0.0
@@ -592,6 +1081,9 @@ def run_backtest(data: OHLCVData, candidate: StrategyCandidate, config: Optional
         exit_fee = _fee(exit_price * position_qty, config)
         fees = entry_fees + exit_fee
         net = gross - fees
+        one_share_gross = exit_price - entry_price
+        one_share_fees = _fee(entry_price, config) + _fee(exit_price, config)
+        one_share_net = one_share_gross - one_share_fees
         cash += (exit_price * position_qty) - exit_fee
         fees_paid += exit_fee
         slippage_estimate += slip * position_qty
@@ -610,6 +1102,9 @@ def run_backtest(data: OHLCVData, candidate: StrategyCandidate, config: Optional
                 "fees": fees,
                 "slippage": entry_slippage + (slip * position_qty),
                 "net_pnl": net,
+                "one_share_gross_pnl": one_share_gross,
+                "one_share_fees": one_share_fees,
+                "one_share_net_pnl": one_share_net,
                 "exit_reason": reason,
                 "bars_held": max(1, exit_index - entry_index),
                 "entry_regimes": entry_regimes,
@@ -733,6 +1228,17 @@ def calculate_metrics(
     total_return = (final_equity / float(config.initial_capital)) - 1.0
     gross_pnls = [float(t["gross_pnl"]) for t in trades]
     net_pnls = [float(t["net_pnl"]) for t in trades]
+    one_share_gross_pnls = [
+        float(t.get("one_share_gross_pnl", float(t.get("exit_price") or 0.0) - float(t.get("entry_price") or 0.0)))
+        for t in trades
+    ]
+    one_share_net_pnls = [
+        float(t.get("one_share_net_pnl", gross))
+        for t, gross in zip(trades, one_share_gross_pnls)
+    ]
+    one_share_buy_notional = sum(float(t.get("entry_price") or 0.0) for t in trades)
+    one_share_sell_notional = sum(float(t.get("exit_price") or 0.0) for t in trades)
+    one_share_fees = sum(float(t.get("one_share_fees") or 0.0) for t in trades)
     wins = [p for p in net_pnls if p > 0]
     losses = [p for p in net_pnls if p < 0]
     trade_count = len(trades)
@@ -751,7 +1257,7 @@ def calculate_metrics(
     avg_trade_return = mean([p / float(config.initial_capital) for p in net_pnls]) if net_pnls else 0.0
     gross_return = sum(gross_pnls) / float(config.initial_capital)
     net_profit = final_equity - float(config.initial_capital)
-    return {
+    metrics = {
         "ok": True,
         "strategy_template": candidate.strategy_name,
         "symbol": data.symbol,
@@ -761,6 +1267,12 @@ def calculate_metrics(
         "initial_capital": float(config.initial_capital),
         "final_equity": final_equity,
         "net_profit": net_profit,
+        "one_share_gross_profit": sum(one_share_gross_pnls),
+        "one_share_net_profit": sum(one_share_net_pnls),
+        "one_share_buy_notional": one_share_buy_notional,
+        "one_share_sell_notional": one_share_sell_notional,
+        "one_share_fees": one_share_fees,
+        "one_share_return": _safe_ratio(sum(one_share_net_pnls), one_share_buy_notional),
         "gross_return": gross_return,
         "total_return": total_return,
         "cagr": cagr,
@@ -782,6 +1294,9 @@ def calculate_metrics(
         "bars": len(data),
         "turnover": _safe_ratio(trade_count, max(1, len(data))),
     }
+    if _is_combo_candidate(candidate):
+        metrics["rule_timeframes"] = _combo_rule_timeframes(candidate, data.timeframe)
+    return metrics
 
 
 def monthly_return_distribution(equity_curve: list[dict[str, Any]]) -> dict[str, float]:

@@ -53,6 +53,36 @@ class IndicatorForgeTimeframeTests(unittest.TestCase):
         self.assertFalse(checks[1]["buy_ok"])
         self.assertTrue(checks[1]["sell_ok"])
 
+    def test_missing_extended_notice_is_only_for_intraday_extended_requests(self):
+        self.assertFalse(
+            main._market_should_note_missing_extended_candles(
+                timeframe="1d",
+                extended_enabled=True,
+                requested_bounds="regular",
+            )
+        )
+        self.assertFalse(
+            main._market_should_note_missing_extended_candles(
+                timeframe="1d",
+                extended_enabled=True,
+                requested_bounds="extended",
+            )
+        )
+        self.assertFalse(
+            main._market_should_note_missing_extended_candles(
+                timeframe="5m",
+                extended_enabled=False,
+                requested_bounds="extended",
+            )
+        )
+        self.assertTrue(
+            main._market_should_note_missing_extended_candles(
+                timeframe="5m",
+                extended_enabled=True,
+                requested_bounds="extended",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

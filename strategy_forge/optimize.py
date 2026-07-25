@@ -11,8 +11,10 @@ from .combo_search import (
     OpenComboGenerator,
     aggregate_result_metrics,
     candidate_signature,
+    candidate_rule_timeframes,
     combo_search_score,
     grade_combo_metrics,
+    normalize_timeframe,
 )
 from .data_loader import load_ohlcv
 from .leaderboard import format_leaderboard
@@ -38,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commission-pct", type=float, default=0.0005)
     parser.add_argument("--slippage-bps", type=float, default=2.0)
     parser.add_argument("--min-trades", type=int, default=100)
+    parser.add_argument("--min-rules", type=int, default=2)
+    parser.add_argument("--max-rules", type=int, default=5)
     parser.add_argument("--skip-walk-forward", action="store_true")
     parser.add_argument("--top", type=int, default=10)
     args = parser.parse_args(argv)
@@ -49,12 +53,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     rejection_config = RejectionConfig(min_trades=int(args.min_trades))
     data_cache = {}
+    cli_timeframes: list[str] = []
+    for timeframe in args.timeframes:
+        tf = normalize_timeframe(timeframe)
+        if tf not in cli_timeframes:
+            cli_timeframes.append(tf)
     evaluated = 0
     stored = 0
     for symbol in args.symbols:
-        for timeframe in args.timeframes:
-            path = args.data_file if len(args.symbols) == 1 and len(args.timeframes) == 1 else None
-            data_cache[(symbol.upper(), timeframe.lower())] = load_ohlcv(
+        for timeframe in cli_timeframes:
+            path = args.data_file if len(args.symbols) == 1 and len(cli_timeframes) == 1 else None
+            data_cache[(symbol.upper(), timeframe)] = load_ohlcv(
                 symbol,
                 timeframe,
                 data_dir=args.data_dir,
@@ -63,10 +72,15 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if args.mode == "evolve":
-        generator = OpenComboGenerator(seed=args.seed, min_rules=2, max_rules=5)
+        generator = OpenComboGenerator(
+            seed=args.seed,
+            min_rules=max(2, int(args.min_rules)),
+            max_rules=max(2, int(args.max_rules)),
+            timeframes=tuple(cli_timeframes),
+        )
         total_evolved_evaluated = 0
-        for timeframe in args.timeframes:
-            tf = timeframe.lower()
+        for timeframe in cli_timeframes:
+            tf = normalize_timeframe(timeframe)
             datasets = [data_cache[(symbol.upper(), tf)] for symbol in args.symbols]
             active_symbols = [data.symbol.upper() for data in datasets]
             population_size = max(2, min(60, max(2, int(args.trials) // 5)))
@@ -85,8 +99,25 @@ def main(argv: list[str] | None = None) -> int:
 
             def evaluate(candidate: object) -> dict[str, object] | None:
                 try:
-                    symbol_results = [run_backtest(data, copy.deepcopy(candidate), bt_config) for data in datasets]
+                    required_timeframes = [normalize_timeframe(item, default=tf) for item in candidate_rule_timeframes(candidate)]  # type: ignore[arg-type]
+                    symbol_results = []
+                    for data in datasets:
+                        symbol = str(data.symbol).upper()
+                        missing = [rule_tf for rule_tf in required_timeframes if (symbol, rule_tf) not in data_cache]
+                        if missing:
+                            raise ValueError(f"{symbol} missing candles for rule timeframe(s): {', '.join(missing)}")
+                        tf_data_map = {rule_tf: data_cache[(symbol, rule_tf)] for rule_tf in required_timeframes}
+                        tf_data_map[tf] = data
+                        symbol_results.append(
+                            run_backtest(
+                                data,
+                                copy.deepcopy(candidate),
+                                bt_config,
+                                data_by_timeframe=tf_data_map,
+                            )
+                        )
                     metrics = aggregate_result_metrics(symbol_results)
+                    metrics["rule_timeframes"] = required_timeframes
                     return {
                         "candidate": candidate,
                         "metrics": metrics,
@@ -192,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     templates = args.template or ["ema_rsi_atr_trend"]
-    for timeframe in args.timeframes:
+    for timeframe in cli_timeframes:
         for candidate in generate_candidates(
             mode=args.mode,
             template_names=templates,

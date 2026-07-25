@@ -73,6 +73,26 @@ def rsi(closes: list[float], length: int) -> list[float]:
     return out
 
 
+def rsi_derivative(closes: list[float], length: int) -> list[float]:
+    values = rsi(closes, length)
+    out = _nan_list(len(values))
+    for i in range(1, len(values)):
+        if is_valid(values[i]) and is_valid(values[i - 1]):
+            out[i] = float(values[i]) - float(values[i - 1])
+    return out
+
+
+def rate_of_change(closes: list[float], length: int) -> list[float]:
+    n = len(closes)
+    length = max(1, int(length))
+    out = _nan_list(n)
+    for i in range(length, n):
+        prior = float(closes[i - length])
+        if prior != 0.0:
+            out[i] = ((float(closes[i]) / prior) - 1.0) * 100.0
+    return out
+
+
 def true_range(highs: list[float], lows: list[float], closes: list[float]) -> list[float]:
     out: list[float] = []
     for i in range(len(closes)):
@@ -238,6 +258,146 @@ def supertrend(
     return trend, direction
 
 
+def parabolic_sar(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    step: float,
+    max_step: float,
+) -> tuple[list[float], list[float]]:
+    n = len(closes)
+    sar = _nan_list(n)
+    direction = _nan_list(n)
+    if n <= 0:
+        return sar, direction
+    step = max(0.0001, float(step))
+    max_step = max(step, float(max_step))
+    long_trend = True if n == 1 else float(closes[min(1, n - 1)]) >= float(closes[0])
+    extreme = float(highs[0]) if long_trend else float(lows[0])
+    sar_value = float(lows[0]) if long_trend else float(highs[0])
+    acceleration = step
+    sar[0] = sar_value
+    direction[0] = 1.0 if long_trend else -1.0
+    for i in range(1, n):
+        next_sar = sar_value + acceleration * (extreme - sar_value)
+        if long_trend:
+            next_sar = min(next_sar, float(lows[i - 1]))
+            if i >= 2:
+                next_sar = min(next_sar, float(lows[i - 2]))
+            if float(lows[i]) < next_sar:
+                long_trend = False
+                sar_value = extreme
+                extreme = float(lows[i])
+                acceleration = step
+            else:
+                sar_value = next_sar
+                if float(highs[i]) > extreme:
+                    extreme = float(highs[i])
+                    acceleration = min(acceleration + step, max_step)
+        else:
+            next_sar = max(next_sar, float(highs[i - 1]))
+            if i >= 2:
+                next_sar = max(next_sar, float(highs[i - 2]))
+            if float(highs[i]) > next_sar:
+                long_trend = True
+                sar_value = extreme
+                extreme = float(highs[i])
+                acceleration = step
+            else:
+                sar_value = next_sar
+                if float(lows[i]) < extreme:
+                    extreme = float(lows[i])
+                    acceleration = min(acceleration + step, max_step)
+        sar[i] = sar_value
+        direction[i] = 1.0 if long_trend else -1.0
+    return sar, direction
+
+
+def heikin_ashi(data: OHLCVData) -> dict[str, list[float]]:
+    n = len(data)
+    ha_open = _nan_list(n)
+    ha_high = _nan_list(n)
+    ha_low = _nan_list(n)
+    ha_close = _nan_list(n)
+    direction = _nan_list(n)
+    body_pct = _nan_list(n)
+    for i in range(n):
+        src_open = float(data.opens[i])
+        src_high = float(data.highs[i])
+        src_low = float(data.lows[i])
+        src_close = float(data.closes[i])
+        close_value = (src_open + src_high + src_low + src_close) / 4.0
+        open_value = (src_open + src_close) / 2.0 if i == 0 else (ha_open[i - 1] + ha_close[i - 1]) / 2.0
+        ha_open[i] = open_value
+        ha_close[i] = close_value
+        ha_high[i] = max(src_high, open_value, close_value)
+        ha_low[i] = min(src_low, open_value, close_value)
+        if close_value > open_value:
+            direction[i] = 1.0
+        elif close_value < open_value:
+            direction[i] = -1.0
+        else:
+            direction[i] = 0.0
+        body_pct[i] = (abs(close_value - open_value) / max(abs(close_value), 1.0e-9)) * 100.0
+    return {
+        "ha_open": ha_open,
+        "ha_high": ha_high,
+        "ha_low": ha_low,
+        "ha_close": ha_close,
+        "ha_direction": direction,
+        "ha_body_pct": body_pct,
+    }
+
+
+def ttm_squeeze(
+    data: OHLCVData,
+    bb_length: int,
+    bb_mult: float,
+    kc_length: int,
+    kc_mult: float,
+    momentum_length: int,
+) -> dict[str, list[float]]:
+    n = len(data)
+    _bb_mid, bb_upper, bb_lower, _percent_b = bollinger_bands(data.closes, bb_length, bb_mult)
+    typical = [
+        (float(data.highs[i]) + float(data.lows[i]) + float(data.closes[i])) / 3.0
+        for i in range(n)
+    ]
+    kc_mid = sma(typical, kc_length)
+    avg_range = sma(true_range(data.highs, data.lows, data.closes), kc_length)
+    kc_upper = _nan_list(n)
+    kc_lower = _nan_list(n)
+    squeeze_on = _nan_list(n)
+    squeeze_fired = _nan_list(n)
+    momentum = _nan_list(n)
+    momentum_delta = _nan_list(n)
+    close_ma = sma(data.closes, momentum_length)
+    for i in range(n):
+        if is_valid(kc_mid[i]) and is_valid(avg_range[i]):
+            kc_upper[i] = float(kc_mid[i]) + (float(kc_mult) * float(avg_range[i]))
+            kc_lower[i] = float(kc_mid[i]) - (float(kc_mult) * float(avg_range[i]))
+        if is_valid(close_ma[i]):
+            momentum[i] = float(data.closes[i]) - float(close_ma[i])
+        if i > 0 and is_valid(momentum[i]) and is_valid(momentum[i - 1]):
+            momentum_delta[i] = float(momentum[i]) - float(momentum[i - 1])
+        if is_valid(bb_upper[i]) and is_valid(bb_lower[i]) and is_valid(kc_upper[i]) and is_valid(kc_lower[i]):
+            squeeze_on[i] = 1.0 if float(bb_upper[i]) < float(kc_upper[i]) and float(bb_lower[i]) > float(kc_lower[i]) else 0.0
+            if i > 0 and is_valid(squeeze_on[i - 1]):
+                squeeze_fired[i] = 1.0 if float(squeeze_on[i - 1]) > 0.0 and float(squeeze_on[i]) <= 0.0 else 0.0
+            else:
+                squeeze_fired[i] = 0.0
+    return {
+        "ttm_bb_upper": bb_upper,
+        "ttm_bb_lower": bb_lower,
+        "ttm_kc_upper": kc_upper,
+        "ttm_kc_lower": kc_lower,
+        "ttm_squeeze_on": squeeze_on,
+        "ttm_squeeze_fired": squeeze_fired,
+        "ttm_momentum": momentum,
+        "ttm_momentum_delta": momentum_delta,
+    }
+
+
 def label_sessions(data: OHLCVData) -> list[str]:
     labels: list[str] = []
     for raw_ts, raw_session in zip(data.timestamps, data.sessions):
@@ -303,6 +463,10 @@ class IndicatorCache:
             value = moving_average(self.data.closes, int(params["length"]), str(params.get("ma_type") or "ema"))
         elif name == "rsi":
             value = rsi(self.data.closes, int(params["length"]))
+        elif name == "rsi_derivative":
+            value = rsi_derivative(self.data.closes, int(params["length"]))
+        elif name == "roc":
+            value = rate_of_change(self.data.closes, int(params["length"]))
         elif name == "atr":
             value = atr(self.data.highs, self.data.lows, self.data.closes, int(params["length"]))
         elif name == "macd":
@@ -330,6 +494,25 @@ class IndicatorCache:
                 self.data.closes,
                 int(params["atr_length"]),
                 float(params["multiplier"]),
+            )
+        elif name == "sar":
+            value = parabolic_sar(
+                self.data.highs,
+                self.data.lows,
+                self.data.closes,
+                float(params["step"]),
+                float(params["max_step"]),
+            )
+        elif name == "heikin_ashi":
+            value = heikin_ashi(self.data)
+        elif name == "ttm":
+            value = ttm_squeeze(
+                self.data,
+                int(params["bb_length"]),
+                float(params["bb_mult"]),
+                int(params["kc_length"]),
+                float(params["kc_mult"]),
+                int(params["momentum_length"]),
             )
         elif name == "regimes":
             value = label_market_regimes(self.data)

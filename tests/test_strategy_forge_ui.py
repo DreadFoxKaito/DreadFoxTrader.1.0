@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import app.main as main
+from strategy_forge.combo_search import build_combo_candidate
 
 
 def _rows(count: int = 180) -> list[dict[str, str]]:
@@ -28,30 +29,28 @@ def _rows(count: int = 180) -> list[dict[str, str]]:
 
 
 class StrategyForgeUiTests(unittest.TestCase):
-    def test_strategy_forge_quick_partial_runs_and_returns_table(self):
-        rows = _rows()
-        opens, highs, lows, closes = main._market_extract_ohlc(rows)
+    def test_strategy_forge_quick_partial_starts_live_panel(self):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 mock.patch.object(main, "_ensure_robinhood_markets_session", return_value=(True, "")),
-                mock.patch.object(
-                    main,
-                    "_market_fetch_ohlc",
-                    return_value=(opens, highs, lows, closes, rows, "regular"),
-                ),
+                mock.patch.object(main, "_strategy_forge_quick_worker", return_value=None),
             ):
                 html = main._render_strategy_forge_quick_html(
                     timeframe="1h",
                     symbols="TQQQ",
                     trials=2,
                     min_trades=1,
+                    min_rules=3,
+                    max_rules=7,
                     broker_hint="robinhood",
                     include_extended_hours_data=False,
                     db_path=Path(tmp) / "forge.sqlite3",
                 )
         self.assertIn("Strategy Forge", html)
-        self.assertIn("open combo evolution", html)
-        self.assertIn("<table>", html)
+        self.assertIn("data-forge-status='queued'", html)
+        self.assertIn("/partials/strategy_forge_quick_status", html)
+        self.assertIn("Rule TF pool", html)
+        self.assertIn("Indicators/combo: 3-7", html)
 
     def test_create_and_edit_pages_include_template_free_strategy_forge(self):
         root = Path(__file__).resolve().parents[1]
@@ -69,6 +68,121 @@ class StrategyForgeUiTests(unittest.TestCase):
         self.assertIn("if_forge_run_btn", edit_html)
         self.assertIn("generic_forge_run_btn", new_html)
         self.assertIn("generic_forge_run_btn", edit_html)
+        self.assertIn("New Random Set", new_html)
+        self.assertIn("New Random Set", edit_html)
+        self.assertIn("if_forge_seed_mode", new_html)
+        self.assertIn("if_forge_seed_mode", edit_html)
+        self.assertIn("generic_forge_seed_job_id", new_html)
+        self.assertIn("generic_forge_seed_job_id", edit_html)
+        self.assertIn("if_forge_min_rules", new_html)
+        self.assertIn("if_forge_max_rules", new_html)
+        self.assertIn("if_forge_min_rules", edit_html)
+        self.assertIn("if_forge_max_rules", edit_html)
+        self.assertIn("generic_forge_min_rules", new_html)
+        self.assertIn("generic_forge_max_rules", new_html)
+        self.assertIn("generic_forge_min_rules", edit_html)
+        self.assertIn("generic_forge_max_rules", edit_html)
+
+    def test_finalist_rows_show_exact_settings_and_save_button(self):
+        candidate = build_combo_candidate(
+            symbols=["TQQQ"],
+            timeframe="5m",
+            rules=[
+                {"kind": "ma_cross", "timeframe": "5m", "params": {"ma_type": "ema", "fast": 5, "slow": 20}},
+                {"kind": "rsi_momentum", "timeframe": "1h", "params": {"length": 14, "entry_min": 55, "exit_below": 40}},
+            ],
+            entry_threshold=2,
+            exit_threshold=1,
+        )
+        public_row = main._strategy_forge_quick_public_row(
+            {
+                "run_id": 12,
+                "candidate": candidate,
+                "score": 0.42,
+                "metrics": {
+                    "total_return": 0.1,
+                    "one_share_net_profit": 12.34,
+                    "trade_count": 4,
+                    "symbol_returns": {"TQQQ": 0.10},
+                    "symbol_one_share_net_profit": {"TQQQ": 12.34},
+                },
+                "timeframes": ["5m", "1h"],
+            },
+            lambda _candidate: "2/2 finalist combo",
+        )
+
+        html = main._render_strategy_forge_quick_rows(
+            [public_row],
+            final=True,
+            broker_hint="robinhood",
+            include_extended_hours_data=True,
+            db_path="/tmp/forge.sqlite3",
+        )
+
+        self.assertIn("Exact settings", html)
+        self.assertIn("1-Share P/L", html)
+        self.assertIn("$12.34", html)
+        self.assertIn("Symbol returns", html)
+        self.assertIn("Symbol 1-share P/L", html)
+        self.assertIn("TQQQ 10.00%", html)
+        self.assertIn("entry=2/2", html)
+        self.assertIn("fast=5", html)
+        self.assertIn("Save as Cryptid", html)
+        self.assertIn("/partials/strategy_forge_save_finalist", html)
+
+    def test_completed_strategy_forge_panel_can_continue_from_seeded_leaderboard(self):
+        candidate = build_combo_candidate(
+            symbols=["TQQQ"],
+            timeframe="5m",
+            rules=[
+                {"kind": "ma_cross", "timeframe": "5m", "params": {"ma_type": "ema", "fast": 5, "slow": 20}},
+                {"kind": "rsi_momentum", "timeframe": "1h", "params": {"length": 14, "entry_min": 55, "exit_below": 40}},
+            ],
+            entry_threshold=2,
+            exit_threshold=1,
+        )
+        public_row = main._strategy_forge_quick_public_row(
+            {
+                "run_id": 99,
+                "candidate": candidate,
+                "score": 0.42,
+                "metrics": {"total_return": 0.1, "trade_count": 4},
+                "timeframes": ["5m", "1h"],
+            },
+            lambda _candidate: "2/2 finalist combo",
+        )
+        job_id = "seededtestjob"
+        with main.STRATEGY_FORGE_QUICK_LOCK:
+            main.STRATEGY_FORGE_QUICK_JOBS[job_id] = {
+                "id": job_id,
+                "status": "completed",
+                "phase": "complete",
+                "symbol_list": ["TQQQ"],
+                "active_symbols": ["TQQQ"],
+                "timeframe": "5m",
+                "trial_count": 10,
+                "evaluated_count": 10,
+                "generation_index": 2,
+                "population_index": 0,
+                "population_size": 4,
+                "stale_generations": 0,
+                "patience": 3,
+                "min_rules": 2,
+                "max_rules": 5,
+                "leaderboard": [public_row],
+                "seed_candidates": [candidate.to_dict()],
+                "seed_count": 1,
+            }
+        try:
+            html = main._render_strategy_forge_quick_status_html(job_id)
+        finally:
+            with main.STRATEGY_FORGE_QUICK_LOCK:
+                main.STRATEGY_FORGE_QUICK_JOBS.pop(job_id, None)
+
+        self.assertIn("Run Again From Top Combos", html)
+        self.assertIn("data-strategy-forge-action='continue'", html)
+        self.assertIn("data-strategy-forge-job-id='seededtestjob'", html)
+        self.assertIn("Continuation seed candidates: 1", html)
 
     def test_indicatorforge_cap_settings_include_cash_position_target(self):
         root = Path(__file__).resolve().parents[1]

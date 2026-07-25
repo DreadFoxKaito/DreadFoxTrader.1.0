@@ -5335,14 +5335,40 @@ def _market_log_historical_candles(
         post_count,
         bool(synthetically_modified),
     )
-    if bool(extended_enabled) and str(requested_bounds).strip().lower() != "24_7" and pre_count == 0 and post_count == 0:
-        logging.getLogger(__name__).warning(
-            "EXTENDED_HOURS_CANDLES_NOT_RETURNED symbol=%s timeframe=%s requested_bounds=%s raw_candle_count=%s",
+    if (
+        _market_should_note_missing_extended_candles(
+            timeframe=timeframe,
+            extended_enabled=extended_enabled,
+            requested_bounds=requested_bounds,
+        )
+        and pre_count == 0
+        and post_count == 0
+    ):
+        logging.getLogger(__name__).info(
+            "Extended-hours candles not returned; using regular-session candles "
+            "symbol=%s timeframe=%s requested_bounds=%s raw_candle_count=%s",
             symbol,
             timeframe,
             requested_bounds,
             len(raw_rows),
         )
+
+
+def _market_should_note_missing_extended_candles(
+    *,
+    timeframe: str,
+    extended_enabled: bool,
+    requested_bounds: str,
+) -> bool:
+    if not bool(extended_enabled):
+        return False
+    requested = str(requested_bounds or "").strip().lower()
+    if requested in ("", "regular", "24_7", "synthetic_from_non_robinhood_closes"):
+        return False
+    interval, _span = _markets_timeframe(timeframe)
+    if str(interval or "").strip().lower() in ("day", "week"):
+        return False
+    return True
 
 
 def _market_fetch_ohlc_rows(
@@ -13965,269 +13991,1277 @@ def partial_indicatorforge_backtest(
     )
 
 
+STRATEGY_FORGE_QUICK_LOCK = threading.Lock()
+STRATEGY_FORGE_QUICK_JOBS: dict[str, dict[str, Any]] = {}
+STRATEGY_FORGE_QUICK_MAX_JOBS = 16
+
+
+def _strategy_forge_quick_fmt_pct(value: Any) -> str:
+    try:
+        return f"{float(value) * 100.0:.2f}%"
+    except Exception:
+        return "N/A"
+
+
+def _strategy_forge_quick_fmt_num(value: Any) -> str:
+    try:
+        return f"{float(value):.3f}"
+    except Exception:
+        return "N/A"
+
+
+def _strategy_forge_quick_fmt_money(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except Exception:
+        return "N/A"
+    sign = "-" if numeric < 0 else ""
+    return f"{sign}${abs(numeric):,.2f}"
+
+
+def _strategy_forge_quick_sort_key(row: dict[str, Any]) -> tuple[float, float, float, float]:
+    metrics = dict(row.get("metrics") or {})
+    return (
+        float(row.get("score") or 0.0),
+        float(metrics.get("total_return") or 0.0),
+        float(metrics.get("worst_symbol_return") or 0.0),
+        -float(metrics.get("max_drawdown") or 0.0),
+    )
+
+
+def _strategy_forge_quick_candidate_payload(candidate: Any) -> dict[str, Any]:
+    if isinstance(candidate, dict):
+        return copy.deepcopy(candidate)
+    to_dict = getattr(candidate, "to_dict", None)
+    if callable(to_dict):
+        try:
+            payload = to_dict()
+            return copy.deepcopy(payload) if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _strategy_forge_quick_compact_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"))
+        except Exception:
+            return str(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def _strategy_forge_quick_symbol_returns_html(symbol_returns: Any, symbol_one_share_profit: Any = None) -> str:
+    has_returns = isinstance(symbol_returns, dict) and bool(symbol_returns)
+    has_profit = isinstance(symbol_one_share_profit, dict) and bool(symbol_one_share_profit)
+    if not has_returns and not has_profit:
+        return ""
+    rows: list[str] = []
+    if has_profit:
+        profit_bits: list[str] = []
+        for symbol, value in list(symbol_one_share_profit.items())[:12]:
+            profit_bits.append(f"{html.escape(str(symbol).upper())} {_strategy_forge_quick_fmt_money(value)}")
+        if len(symbol_one_share_profit) > 12:
+            profit_bits.append("...")
+        rows.append(f"<strong>Symbol 1-share P/L</strong>: {', '.join(profit_bits)}")
+    if has_returns:
+        return_bits: list[str] = []
+        for symbol, value in list(symbol_returns.items())[:12]:
+            return_bits.append(f"{html.escape(str(symbol).upper())} {_strategy_forge_quick_fmt_pct(value)}")
+        if len(symbol_returns) > 12:
+            return_bits.append("...")
+        rows.append(f"<strong>Symbol returns</strong>: {', '.join(return_bits)}")
+    return "<div style='margin-top:4px;'>" + "<br>".join(rows) + "</div>"
+
+
+def _strategy_forge_quick_rule_settings_html(candidate: Any) -> str:
+    payload = _strategy_forge_quick_candidate_payload(candidate)
+    if not payload:
+        return ""
+    params = payload.get("parameters") if isinstance(payload.get("parameters"), dict) else {}
+    risk = payload.get("risk") if isinstance(payload.get("risk"), dict) else {}
+    rules = [rule for rule in params.get("rules") or [] if isinstance(rule, dict)]
+    rule_count = len(rules)
+    entry_threshold = params.get("entry_threshold", rule_count)
+    exit_threshold = params.get("exit_threshold", 1)
+    execution_tf = str(payload.get("timeframe") or "").strip()
+    summary_bits = [
+        f"execution_tf={execution_tf or 'N/A'}",
+        f"entry={entry_threshold}/{rule_count}",
+        f"exit={exit_threshold}/{rule_count}",
+    ]
+    for key in ("atr_length", "atr_stop_mult", "atr_trailing"):
+        if key in params:
+            summary_bits.append(f"{key}={_strategy_forge_quick_compact_value(params.get(key))}")
+    rows = [
+        "<details style='margin-top:4px;'>",
+        "<summary>Exact settings</summary>",
+        "<div style='display:flex; flex-direction:column; gap:4px; margin-top:4px;'>",
+        f"<div><strong>Combo</strong>: {html.escape(', '.join(summary_bits))}</div>",
+    ]
+    for idx, rule in enumerate(rules, start=1):
+        rule_params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
+        tf = str(rule.get("timeframe") or rule_params.get("timeframe") or execution_tf or "").strip()
+        kind = str(rule.get("kind") or "rule").strip()
+        rule_id = str(rule.get("id") or rule_params.get("rule_id") or "").strip()
+        name = str(rule.get("name") or kind).strip()
+        param_bits = [
+            f"{key}={_strategy_forge_quick_compact_value(rule_params.get(key))}"
+            for key in sorted(rule_params.keys())
+        ]
+        title_bits = [f"#{idx}", f"[{tf or 'N/A'}]", kind]
+        if name and name != kind:
+            title_bits.append(name)
+        if rule_id:
+            title_bits.append(f"id={rule_id}")
+        rows.append(
+            "<div>"
+            f"<strong>{html.escape(' '.join(title_bits))}</strong><br>"
+            f"<code style='white-space:normal;'>{html.escape(', '.join(param_bits) or 'no params')}</code>"
+            "</div>"
+        )
+    if risk:
+        risk_bits = [
+            f"{key}={_strategy_forge_quick_compact_value(risk.get(key))}"
+            for key in sorted(risk.keys())
+        ]
+        rows.append(f"<div><strong>Risk</strong>: <code style='white-space:normal;'>{html.escape(', '.join(risk_bits))}</code></div>")
+    rows.append("</div></details>")
+    return "".join(rows)
+
+
+def _strategy_forge_quick_public_row(row: dict[str, Any], describe_candidate: Any) -> dict[str, Any]:
+    metrics = dict(row.get("metrics") or {})
+    candidate = row.get("candidate")
+    reasons = list(row.get("reasons") or [])
+    timeframes = list(row.get("timeframes") or [])
+    combo_text = str(row.get("combo") or "")
+    if not combo_text and candidate is not None:
+        try:
+            combo_text = str(describe_candidate(candidate))
+        except Exception:
+            combo_text = "combo unavailable"
+    if not timeframes and isinstance(metrics.get("rule_timeframes"), list):
+        timeframes = [str(item) for item in metrics.get("rule_timeframes") or []]
+    if reasons:
+        combo_text += " | " + ", ".join(str(item) for item in reasons[:2])
+    return {
+        "run_id": int(row.get("run_id") or 0),
+        "grade": str(row.get("grade") or ""),
+        "generation": int(row.get("generation") or 0),
+        "evaluation": int(row.get("evaluation") or 0),
+        "origin": str(row.get("origin") or ""),
+        "timeframe": ", ".join(str(item) for item in timeframes) or str(row.get("timeframe") or getattr(candidate, "timeframe", "") or ""),
+        "score": float(row.get("score") or 0.0),
+        "total_return": metrics.get("total_return"),
+        "one_share_net_profit": metrics.get("one_share_net_profit"),
+        "worst_symbol_return": metrics.get("worst_symbol_return"),
+        "max_drawdown": metrics.get("max_drawdown"),
+        "profit_factor": metrics.get("profit_factor"),
+        "win_rate": metrics.get("win_rate"),
+        "trade_count": int(metrics.get("trade_count") or 0),
+        "symbol_returns": dict(metrics.get("symbol_returns") or {}) if isinstance(metrics.get("symbol_returns"), dict) else {},
+        "symbol_one_share_net_profit": (
+            dict(metrics.get("symbol_one_share_net_profit") or {})
+            if isinstance(metrics.get("symbol_one_share_net_profit"), dict)
+            else {}
+        ),
+        "combo": combo_text,
+        "settings_html": _strategy_forge_quick_rule_settings_html(candidate),
+    }
+
+
+def _strategy_forge_quick_public_rows(
+    rows: list[dict[str, Any]],
+    describe_candidate: Any,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    sorted_rows = sorted(rows, key=_strategy_forge_quick_sort_key, reverse=True)
+    return [_strategy_forge_quick_public_row(row, describe_candidate) for row in sorted_rows[: max(0, int(limit))]]
+
+
+def _strategy_forge_quick_seed_candidates(rows: list[dict[str, Any]], *, limit: int = 8) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in sorted(rows, key=_strategy_forge_quick_sort_key, reverse=True)[: max(0, int(limit))]:
+        candidate = row.get("candidate")
+        if candidate is None:
+            continue
+        try:
+            payload = _strategy_forge_quick_candidate_payload(candidate)
+        except Exception:
+            continue
+        if payload.get("parameters"):
+            out.append(payload)
+    return out
+
+
+def _strategy_forge_quick_prune_locked() -> None:
+    if len(STRATEGY_FORGE_QUICK_JOBS) <= STRATEGY_FORGE_QUICK_MAX_JOBS:
+        return
+    ordered = sorted(
+        STRATEGY_FORGE_QUICK_JOBS.items(),
+        key=lambda item: float(item[1].get("created_ts") or 0.0),
+    )
+    overflow = max(0, len(ordered) - STRATEGY_FORGE_QUICK_MAX_JOBS)
+    removed = 0
+    for job_id, job in ordered:
+        if removed >= overflow:
+            break
+        if str(job.get("status") or "") in {"completed", "error"}:
+            STRATEGY_FORGE_QUICK_JOBS.pop(job_id, None)
+            removed += 1
+    for job_id, _job in ordered:
+        if removed >= overflow:
+            break
+        STRATEGY_FORGE_QUICK_JOBS.pop(job_id, None)
+        removed += 1
+
+
+def _strategy_forge_quick_update(job_id: str, **updates: Any) -> None:
+    with STRATEGY_FORGE_QUICK_LOCK:
+        job = STRATEGY_FORGE_QUICK_JOBS.get(str(job_id))
+        if not job:
+            return
+        job.update(copy.deepcopy(updates))
+        job["updated_ts"] = time.time()
+
+
+def _strategy_forge_quick_snapshot(job_id: str) -> Optional[dict[str, Any]]:
+    with STRATEGY_FORGE_QUICK_LOCK:
+        job = STRATEGY_FORGE_QUICK_JOBS.get(str(job_id))
+        return copy.deepcopy(job) if job else None
+
+
+def _strategy_forge_quick_event(
+    events: list[dict[str, Any]],
+    *,
+    kind: str,
+    generation: int,
+    timeframe: str,
+    combo: str,
+    detail: str = "",
+) -> None:
+    events.append(
+        {
+            "kind": str(kind),
+            "generation": int(generation),
+            "timeframe": str(timeframe),
+            "combo": str(combo),
+            "detail": str(detail),
+        }
+    )
+    del events[:-12]
+
+
+def _render_strategy_forge_quick_save_form(
+    row: dict[str, Any],
+    *,
+    broker_hint: str,
+    include_extended_hours_data: bool,
+    db_path: str,
+) -> str:
+    run_id = int(row.get("run_id") or 0)
+    if run_id <= 0:
+        return "<span class='small'>Saved run unavailable.</span>"
+    return (
+        "<form hx-post='/partials/strategy_forge_save_finalist' hx-target='this' hx-swap='outerHTML' "
+        "style='display:flex; flex-direction:column; gap:4px; min-width:120px;'>"
+        f"<input type='hidden' name='run_id' value='{run_id}' />"
+        f"<input type='hidden' name='broker_hint' value='{html.escape(str(broker_hint or 'robinhood'), quote=True)}' />"
+        f"<input type='hidden' name='include_extended_hours_data' value='{'true' if include_extended_hours_data else 'false'}' />"
+        f"<input type='hidden' name='db_path' value='{html.escape(str(db_path or ''), quote=True)}' />"
+        "<button type='submit' class='btn' style='white-space:nowrap;'>Save as Cryptid</button>"
+        "</form>"
+    )
+
+
+def _render_strategy_forge_quick_rows(
+    rows: list[dict[str, Any]],
+    *,
+    final: bool = False,
+    broker_hint: str = "robinhood",
+    include_extended_hours_data: bool = False,
+    db_path: str = "",
+) -> str:
+    if not rows:
+        return "<div class='small'>No evaluated candidates yet.</div>"
+    action_head = "<th>Action</th>" if final else ""
+    head = (
+        "<thead><tr><th>Rank</th><th>Run</th><th>Grade</th><th>Gen</th><th>Eval</th><th>TF</th><th>Origin</th>"
+        f"<th>Score</th><th>1-Share P/L</th><th>Return %</th><th>Worst</th><th>Drawdown</th><th>PF</th><th>Win</th><th>Trades</th><th>Indicators</th>{action_head}</tr></thead>"
+    )
+    out = ["<div class='status-table-wrap'><table>", head, "<tbody>"]
+    for index, row in enumerate(rows, start=1):
+        run_id = int(row.get("run_id") or 0)
+        run_text = f"#{run_id}" if run_id else ""
+        grade = str(row.get("grade") or "")
+        if not final and not grade:
+            grade = "live"
+        settings_html = str(row.get("settings_html") or "")
+        symbol_returns_html = _strategy_forge_quick_symbol_returns_html(
+            row.get("symbol_returns"),
+            row.get("symbol_one_share_net_profit"),
+        )
+        action_html = (
+            _render_strategy_forge_quick_save_form(
+                row,
+                broker_hint=broker_hint,
+                include_extended_hours_data=include_extended_hours_data,
+                db_path=db_path,
+            )
+            if final
+            else ""
+        )
+        out.append(
+            "<tr>"
+            f"<td>{index}</td>"
+            f"<td>{html.escape(run_text)}</td>"
+            f"<td>{html.escape(grade)}</td>"
+            f"<td>{int(row.get('generation') or 0)}</td>"
+            f"<td>{int(row.get('evaluation') or 0)}</td>"
+            f"<td>{html.escape(str(row.get('timeframe') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('origin') or ''))}</td>"
+            f"<td>{_strategy_forge_quick_fmt_num(row.get('score'))}</td>"
+            f"<td>{_strategy_forge_quick_fmt_money(row.get('one_share_net_profit'))}</td>"
+            f"<td>{_strategy_forge_quick_fmt_pct(row.get('total_return'))}</td>"
+            f"<td>{_strategy_forge_quick_fmt_pct(row.get('worst_symbol_return'))}</td>"
+            f"<td>{_strategy_forge_quick_fmt_pct(row.get('max_drawdown'))}</td>"
+            f"<td>{_strategy_forge_quick_fmt_num(row.get('profit_factor'))}</td>"
+            f"<td>{_strategy_forge_quick_fmt_pct(row.get('win_rate'))}</td>"
+            f"<td>{int(row.get('trade_count') or 0)}</td>"
+            f"<td class='small'><div>{html.escape(str(row.get('combo') or ''))}</div>{symbol_returns_html}{settings_html}</td>"
+            + (f"<td>{action_html}</td>" if final else "")
+            + "</tr>"
+        )
+    out.append("</tbody></table></div>")
+    return "".join(out)
+
+
+def _render_strategy_forge_quick_status_html(job_id: str) -> str:
+    job = _strategy_forge_quick_snapshot(job_id)
+    if not job:
+        return "<div class='small' data-forge-status='error'>Strategy Forge run was not found. Start a new run.</div>"
+
+    status = str(job.get("status") or "queued")
+    polling = status in {"queued", "running"}
+    escaped_job_id = html.escape(str(job_id), quote=True)
+    poll_attrs = (
+        f' hx-get="/partials/strategy_forge_quick_status?job_id={escaped_job_id}"'
+        ' hx-trigger="every 1s" hx-swap="outerHTML"'
+        if polling
+        else ""
+    )
+    evaluated = int(job.get("evaluated_count") or 0)
+    trial_count = max(1, int(job.get("trial_count") or 1))
+    generation = int(job.get("generation_index") or 0)
+    population_index = int(job.get("population_index") or 0)
+    population_size = int(job.get("population_size") or 0)
+    stale_generations = int(job.get("stale_generations") or 0)
+    patience = int(job.get("patience") or 0)
+    progress = max(0.0, min(100.0, (float(evaluated) / float(trial_count)) * 100.0))
+    phase = html.escape(str(job.get("phase") or status))
+    symbols_txt = html.escape(", ".join(str(item) for item in list(job.get("active_symbols") or job.get("symbol_list") or [])))
+    timeframe_txt = html.escape(str(job.get("timeframe") or ""))
+    current_combo = html.escape(str(job.get("current_combo") or "Waiting for first candidate."))
+    current_origin = html.escape(str(job.get("current_origin") or ""))
+    best_score = job.get("best_score")
+    current_score = job.get("current_score")
+    timeframe_pool = list(job.get("timeframe_pool") or [])
+    min_rules = int(job.get("min_rules") or 2)
+    max_rules = int(job.get("max_rules") or min_rules)
+    broker_hint = str(job.get("broker_hint") or "robinhood")
+    include_extended = bool(job.get("include_extended_hours_data"))
+    seed_mode = str(job.get("seed_mode") or "random")
+    seed_source_job_id = str(job.get("seed_source_job_id") or job.get("seed_job_id") or "")
+    seed_count = int(job.get("seed_count") or 0)
+    data_errors = list(job.get("data_errors") or [])
+    error = str(job.get("error") or "")
+    leaderboard = list(job.get("leaderboard") or [])
+    generation_rows = list(job.get("generation_rows") or [])
+    events = list(job.get("events") or [])
+
+    out = [
+        f"<div class='strategy-forge-live' data-forge-status='{html.escape(status, quote=True)}'{poll_attrs}>",
+        "<div class='row' style='align-items:center; gap:10px; margin-bottom:8px;'>",
+        "<div><strong>Strategy Forge</strong></div>",
+        f"<div><strong>{html.escape(status.title())}</strong></div>",
+        f"<div class='small'>Phase: {phase}</div>",
+        f"<div class='small'>Symbols: {symbols_txt or 'N/A'}</div>",
+        f"<div class='small'>Execution TF: {timeframe_txt or 'N/A'}</div>",
+        f"<div class='small'>Rule TF pool: {html.escape(', '.join(str(item) for item in timeframe_pool) if timeframe_pool else (timeframe_txt or 'N/A'))}</div>",
+        f"<div class='small'>Indicators/combo: {min_rules}-{max_rules}</div>",
+        f"<div class='small'>Seed: {html.escape(f'top combos from {seed_source_job_id[:8]}' if seed_mode == 'leaderboard' and seed_source_job_id else 'random')}</div>",
+        f"<div class='small'>Evaluations: {evaluated}/{trial_count}</div>",
+        f"<div class='small'>Generation: {generation}</div>",
+        "</div>",
+        "<div style='height:8px; background:#eceff3; border-radius:999px; overflow:hidden; margin:6px 0 10px 0;'>",
+        f"<div style='height:8px; width:{progress:.1f}%; background:#2f7dd3;'></div>",
+        "</div>",
+        "<div class='row' style='align-items:flex-start; gap:12px; margin-bottom:10px;'>",
+        "<div class='small' style='min-width:220px;'>"
+        f"Population: {population_index}/{population_size or 'N/A'} &nbsp; "
+        f"Stale generations: {stale_generations}/{patience or 'N/A'} &nbsp; "
+        f"Best score: {_strategy_forge_quick_fmt_num(best_score)}"
+        "</div>",
+        "<div class='small' style='min-width:220px;'>"
+        f"Current score: {_strategy_forge_quick_fmt_num(current_score)} &nbsp; "
+        f"Origin: {current_origin or 'N/A'}"
+        "</div>",
+        "</div>",
+        "<div class='small' style='margin:6px 0 10px 0;'><strong>Current combo</strong>: "
+        f"{current_combo}</div>",
+    ]
+    if events:
+        out.append("<div class='small' style='margin:6px 0 10px 0;'><strong>Recent evolution/mutation activity</strong>: ")
+        event_bits: list[str] = []
+        for event in events[-6:]:
+            bit = (
+                f"G{int(event.get('generation') or 0)} "
+                f"{html.escape(str(event.get('kind') or 'event'))} "
+                f"{html.escape(str(event.get('timeframe') or ''))}: "
+                f"{html.escape(str(event.get('combo') or ''))}"
+            )
+            detail = str(event.get("detail") or "")
+            if detail:
+                bit += f" ({html.escape(detail)})"
+            event_bits.append(bit)
+        out.append(" | ".join(event_bits))
+        out.append("</div>")
+    if error:
+        out.append(f"<div class='small' style='margin:6px 0 10px 0;'>Error: {html.escape(error)}</div>")
+    if data_errors:
+        out.append(
+            "<div class='small' style='margin:6px 0 10px 0;'>Skipped data: "
+            + html.escape("; ".join(str(item) for item in data_errors[:4]))
+            + "</div>"
+        )
+    if status == "completed" and leaderboard:
+        out.append(
+            "<div class='row' style='align-items:center; gap:8px; margin:8px 0 10px 0;'>"
+            f"<button type='button' class='btn primary' data-strategy-forge-action='continue' "
+            f"data-strategy-forge-job-id='{escaped_job_id}'>Run Again From Top Combos</button>"
+            "<button type='button' class='btn' data-strategy-forge-action='random'>New Random Set</button>"
+            f"<div class='small'>Continuation seed candidates: {seed_count or len(leaderboard)}</div>"
+            "</div>"
+        )
+    db_path = str(job.get("db_path") or "")
+    leaderboard_title = "Finalist combinations" if status == "completed" else "Live leaderboard"
+    out.append(f"<div class='small' style='margin:8px 0 4px 0;'><strong>{leaderboard_title}</strong></div>")
+    out.append(
+        _render_strategy_forge_quick_rows(
+            leaderboard,
+            final=status == "completed",
+            broker_hint=broker_hint,
+            include_extended_hours_data=include_extended,
+            db_path=db_path,
+        )
+    )
+    if generation_rows and status in {"queued", "running"}:
+        out.append("<div class='small' style='margin:10px 0 4px 0;'><strong>Current generation candidates</strong></div>")
+        out.append(_render_strategy_forge_quick_rows(generation_rows[:8], final=False))
+    if db_path:
+        out.append(f"<div class='small' style='margin-top:6px;'>DB: {html.escape(db_path)}</div>")
+    out.append("</div>")
+    return "".join(out)
+
+
+def _strategy_forge_quick_worker(job_id: str, config: dict[str, Any]) -> None:
+    try:
+        from strategy_forge import DEFAULT_DB_PATH as FORGE_DEFAULT_DB_PATH
+        from strategy_forge.backtest_runner import BacktestConfig, BacktestResult, run_backtest
+        from strategy_forge.combo_search import (
+            COMBO_TIMEFRAMES,
+            OpenComboGenerator,
+            aggregate_result_metrics,
+            build_combo_candidate,
+            candidate_signature,
+            candidate_rule_timeframes,
+            combo_search_score,
+            describe_candidate,
+            grade_combo_metrics,
+            normalize_timeframe,
+        )
+        from strategy_forge.data_loader import normalize_rows
+        from strategy_forge.result_store import store_backtest_result, store_robustness_test
+        from strategy_forge.strategy_templates import StrategyCandidate
+    except Exception as exc:
+        _strategy_forge_quick_update(
+            job_id,
+            status="error",
+            phase="import failed",
+            error=f"Strategy Forge unavailable: {exc}",
+        )
+        return
+
+    symbol_list = list(config.get("symbol_list") or [])
+    tf = normalize_timeframe(config.get("timeframe") or "1h")
+    trial_count = max(1, min(int(config.get("trials") or 250), 5000))
+    min_trade_count = max(1, min(int(config.get("min_trades") or 100), 10000))
+    min_rule_count = max(2, min(int(config.get("min_rules") or 2), 30))
+    max_rule_count = max(min_rule_count, min(int(config.get("max_rules") or 5), 30))
+    source_hint = _normalize_market_source_hint(str(config.get("broker_hint") or "robinhood"))
+    include_extended = True if source_hint == "robinhood_crypto" else bool(config.get("include_extended_hours_data"))
+    forge_db_path = Path(config.get("db_path")) if config.get("db_path") is not None else FORGE_DEFAULT_DB_PATH
+    seed_mode = str(config.get("seed_mode") or "random").strip().lower()
+    if seed_mode not in {"leaderboard"}:
+        seed_mode = "random"
+    seed_source_job_id = str(config.get("seed_job_id") or "").strip()
+    seed_payloads: list[dict[str, Any]] = []
+    if seed_mode == "leaderboard" and seed_source_job_id:
+        source_job = _strategy_forge_quick_snapshot(seed_source_job_id)
+        seed_payloads = [
+            dict(item)
+            for item in list((source_job or {}).get("seed_candidates") or [])
+            if isinstance(item, dict)
+        ]
+    if seed_mode == "leaderboard" and not seed_payloads:
+        seed_mode = "random"
+        seed_source_job_id = ""
+    events: list[dict[str, Any]] = []
+
+    try:
+        _strategy_forge_quick_update(
+            job_id,
+            status="running",
+            phase="checking market data session",
+            timeframe=tf,
+            trial_count=trial_count,
+            min_trades=min_trade_count,
+            min_rules=min_rule_count,
+            max_rules=max_rule_count,
+            broker_hint=source_hint,
+            include_extended_hours_data=include_extended,
+            seed_mode=seed_mode,
+            seed_source_job_id=seed_source_job_id,
+            seed_count=len(seed_payloads),
+            db_path=str(forge_db_path),
+        )
+
+        if source_hint in ("robinhood", "robinhood_crypto"):
+            ok, msg = _ensure_robinhood_markets_session()
+            if not ok:
+                _strategy_forge_quick_update(
+                    job_id,
+                    status="error",
+                    phase="session unavailable",
+                    error=f"Strategy Forge unavailable: {msg}",
+                )
+                return
+
+        candidate_timeframes: list[str] = []
+        for item in (COMBO_TIMEFRAMES or ()):
+            normalized_tf = normalize_timeframe(item, default=tf)
+            if normalized_tf not in candidate_timeframes:
+                candidate_timeframes.append(normalized_tf)
+        if tf not in candidate_timeframes:
+            candidate_timeframes.insert(0, tf)
+
+        def _load_strategy_forge_data(symbol: str, timeframe_key: str) -> Any:
+            opens, highs, lows, closes, raw_rows, requested_bounds = _market_fetch_ohlc(
+                symbol,
+                timeframe_key,
+                broker_hint=source_hint,
+                min_candles=360,
+                include_extended=include_extended,
+            )
+            if raw_rows:
+                return normalize_rows(raw_rows, symbol=symbol, timeframe=timeframe_key, source=f"ui:{requested_bounds}")
+            rows = [
+                {
+                    "timestamp": str(i),
+                    "open": opens[i],
+                    "high": highs[i],
+                    "low": lows[i],
+                    "close": closes[i],
+                    "volume": 0.0,
+                }
+                for i in range(min(len(opens), len(highs), len(lows), len(closes)))
+            ]
+            return normalize_rows(rows, symbol=symbol, timeframe=timeframe_key, source="ui:synthetic_ohlc")
+
+        datasets = []
+        datasets_by_symbol: dict[str, dict[str, Any]] = {}
+        candle_counts_by_symbol: dict[str, dict[str, int]] = {}
+        data_errors: list[str] = []
+        for symbol in symbol_list:
+            symbol_tf_map: dict[str, Any] = {}
+            count_map: dict[str, int] = {}
+            for candidate_tf in candidate_timeframes:
+                _strategy_forge_quick_update(
+                    job_id,
+                    phase=f"loading {candidate_tf} candles for {symbol}",
+                    data_errors=data_errors,
+                    timeframe_pool=candidate_timeframes,
+                    symbol_timeframe_counts=candle_counts_by_symbol,
+                )
+                try:
+                    data = _load_strategy_forge_data(symbol, candidate_tf)
+                    count_map[candidate_tf] = int(len(data))
+                    if len(data) < 80:
+                        if candidate_tf == tf:
+                            data_errors.append(f"{symbol} {candidate_tf}: only {len(data)} candles")
+                        continue
+                    symbol_tf_map[candidate_tf] = data
+                except Exception as exc:
+                    count_map[candidate_tf] = 0
+                    if candidate_tf == tf:
+                        data_errors.append(f"{symbol} {candidate_tf}: {exc}")
+            candle_counts_by_symbol[str(symbol).upper()] = count_map
+            execution_data = symbol_tf_map.get(tf)
+            if execution_data is None:
+                data_errors.append(f"{symbol}: no usable {tf} execution candles")
+                continue
+            datasets.append(execution_data)
+            datasets_by_symbol[str(execution_data.symbol).upper()] = symbol_tf_map
+
+        if not datasets:
+            _strategy_forge_quick_update(
+                job_id,
+                status="error",
+                phase="data unavailable",
+                data_errors=data_errors,
+                error="Strategy Forge needs more usable candles.",
+            )
+            return
+
+        active_symbols = [str(data.symbol).upper() for data in datasets]
+        rule_timeframe_pool = [
+            candidate_tf
+            for candidate_tf in candidate_timeframes
+            if all(candidate_tf in datasets_by_symbol.get(sym, {}) for sym in active_symbols)
+        ]
+        if tf not in rule_timeframe_pool:
+            rule_timeframe_pool.insert(0, tf)
+        rule_timeframe_pool = [item for i, item in enumerate(rule_timeframe_pool) if item and item not in rule_timeframe_pool[:i]]
+        generator = OpenComboGenerator(
+            seed=int(time.time()),
+            min_rules=min_rule_count,
+            max_rules=max_rule_count,
+            timeframes=tuple(rule_timeframe_pool),
+        )
+        bt_config = BacktestConfig(
+            initial_capital=100000.0,
+            commission_pct=0.0005,
+            slippage_bps=2.0,
+        )
+
+        def _candidate_from_seed_payload(payload: dict[str, Any]) -> Optional[StrategyCandidate]:
+            try:
+                seeded = StrategyCandidate.from_dict(dict(payload))
+                seeded_params = dict(seeded.parameters or {})
+                seeded_risk = dict(seeded.risk or {})
+                seed_rules = list(copy.deepcopy(seeded_params.get("rules") or []))
+                if len(seed_rules) < 2:
+                    return None
+                for rule in seed_rules:
+                    if not isinstance(rule, dict):
+                        continue
+                    params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
+                    rule_tf = normalize_timeframe(rule.get("timeframe") or params.get("timeframe"), default=tf)
+                    if rule_tf not in rule_timeframe_pool:
+                        rule["timeframe"] = tf
+                return build_combo_candidate(
+                    symbols=active_symbols,
+                    timeframe=tf,
+                    rules=seed_rules,
+                    entry_threshold=seeded_params.get("entry_threshold"),
+                    exit_threshold=seeded_params.get("exit_threshold"),
+                    atr_length=int(seeded_params.get("atr_length") or 14),
+                    atr_stop_mult=float(seeded_params.get("atr_stop_mult") or 2.5),
+                    atr_trailing=bool(seeded_params.get("atr_trailing", True)),
+                    profit_target_atr_mult=seeded_risk.get("profit_target_atr_mult"),
+                    max_position_pct=float(seeded_risk.get("max_position_pct") or 0.15),
+                    max_daily_loss_pct=float(seeded_risk.get("max_daily_loss_pct") or 0.03),
+                    max_trades_per_day=int(seeded_risk.get("max_trades_per_day") or 8),
+                )
+            except Exception:
+                return None
+
+        def _evaluate_candidate(candidate: Any, generation: int, evaluation: int, origin: str) -> Optional[dict[str, Any]]:
+            try:
+                rule_timeframes = [normalize_timeframe(item, default=tf) for item in candidate_rule_timeframes(candidate)]
+                symbol_results = []
+                for data in datasets:
+                    sym = str(data.symbol).upper()
+                    symbol_tf_map = datasets_by_symbol.get(sym, {})
+                    missing = [rule_tf for rule_tf in rule_timeframes if rule_tf not in symbol_tf_map]
+                    if missing:
+                        raise ValueError(f"{sym} missing candles for rule timeframe(s): {', '.join(missing)}")
+                    tf_data_map = {rule_tf: symbol_tf_map[rule_tf] for rule_tf in rule_timeframes}
+                    tf_data_map[tf] = data
+                    symbol_results.append(
+                        run_backtest(
+                            data,
+                            copy.deepcopy(candidate),
+                            bt_config,
+                            data_by_timeframe=tf_data_map,
+                        )
+                    )
+                metrics = aggregate_result_metrics(symbol_results)
+                metrics["rule_timeframes"] = rule_timeframes
+                score = combo_search_score(metrics, min_trades=min_trade_count)
+                return {
+                    "candidate": candidate,
+                    "generation": generation,
+                    "evaluation": evaluation,
+                    "origin": origin,
+                    "timeframe": tf,
+                    "timeframes": rule_timeframes,
+                    "score": float(score),
+                    "metrics": metrics,
+                    "symbol_results": symbol_results,
+                }
+            except Exception as exc:
+                _strategy_forge_quick_update(job_id, error=f"Last evaluation failed: {exc}")
+                return None
+
+        population_size = max(2, min(40, max(2, trial_count // 4)))
+        elite_count = max(1, min(8, population_size // 4))
+        patience = max(3, min(30, trial_count // max(1, population_size)))
+        generation_index = 0
+        evaluated_count = 0
+        best_score = -999999.0
+        stale_generations = 0
+        seen: set[str] = set()
+        results: list[dict[str, Any]] = []
+
+        seed_candidates: list[StrategyCandidate] = []
+        for payload in seed_payloads[: max(population_size, elite_count, 8)]:
+            candidate = _candidate_from_seed_payload(payload)
+            if candidate is not None:
+                seed_candidates.append(candidate)
+        unique_seed_candidates: list[StrategyCandidate] = []
+        seed_signatures: set[str] = set()
+        for candidate in seed_candidates:
+            signature = candidate_signature(candidate)
+            if signature in seed_signatures:
+                continue
+            seed_signatures.add(signature)
+            unique_seed_candidates.append(candidate)
+        seed_candidates = unique_seed_candidates
+
+        population: list[dict[str, Any]] = []
+        initial_seen: set[str] = set()
+
+        def _push_initial_candidate(candidate: Any, *, origin: str, detail: str) -> bool:
+            signature = candidate_signature(candidate)
+            if signature in initial_seen:
+                return False
+            initial_seen.add(signature)
+            population.append({"candidate": candidate, "origin": origin, "detail": detail})
+            return True
+
+        for candidate in seed_candidates[: min(population_size, trial_count)]:
+            _push_initial_candidate(
+                candidate,
+                origin="top seed",
+                detail=f"from {seed_source_job_id[:8]}" if seed_source_job_id else "leaderboard",
+            )
+
+        initial_attempts = 0
+        max_initial_attempts = max(20, population_size * 50)
+        while len(population) < min(population_size, trial_count) and initial_attempts < max_initial_attempts:
+            initial_attempts += 1
+            if seed_candidates and generator.random.random() < 0.80:
+                if len(seed_candidates) >= 2 and generator.random.random() < 0.55:
+                    parents = generator.random.sample(seed_candidates, 2)
+                    child = generator.crossover_candidates(parents[0], parents[1])
+                    origin = "seed crossover"
+                    detail = "top combo parents"
+                else:
+                    parent = generator.random.choice(seed_candidates)
+                    child = generator.mutate_candidate(parent)
+                    origin = "seed mutation"
+                    detail = "top combo mutation"
+            else:
+                child = generator.random_candidate(symbols=active_symbols, timeframe=tf)
+                origin = "random seed"
+                detail = "initial population"
+            _push_initial_candidate(child, origin=origin, detail=detail)
+
+        _strategy_forge_quick_update(
+            job_id,
+            status="running",
+            phase="evolving seeded population" if seed_candidates else "evolving population",
+            active_symbols=active_symbols,
+            data_errors=data_errors,
+            population_size=population_size,
+            elite_count=elite_count,
+            patience=patience,
+            timeframe_pool=rule_timeframe_pool,
+            symbol_timeframe_counts=candle_counts_by_symbol,
+            generation_index=generation_index,
+            evaluated_count=evaluated_count,
+            stale_generations=stale_generations,
+            best_score=None,
+            leaderboard=[],
+            generation_rows=[],
+            seed_mode="leaderboard" if seed_candidates else "random",
+            seed_source_job_id=seed_source_job_id if seed_candidates else "",
+            seed_count=len(seed_candidates),
+        )
+
+        while population and evaluated_count < trial_count and stale_generations < patience:
+            generation_best = -999999.0
+            generation_results: list[dict[str, Any]] = []
+            _strategy_forge_quick_update(
+                job_id,
+                phase="evaluating generation",
+                generation_index=generation_index,
+                population_size=len(population),
+                population_index=0,
+                generation_rows=[],
+            )
+            for population_index, record in enumerate(population, start=1):
+                candidate = record["candidate"]
+                signature = candidate_signature(candidate)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                origin = str(record.get("origin") or "candidate")
+                combo_text = describe_candidate(candidate)
+                _strategy_forge_quick_update(
+                    job_id,
+                    phase="evaluating candidate",
+                    generation_index=generation_index,
+                    population_index=population_index,
+                    population_size=len(population),
+                    evaluated_count=evaluated_count,
+                    current_origin=origin,
+                    current_combo=combo_text,
+                    current_score=None,
+                )
+                row = _evaluate_candidate(candidate, generation_index, evaluated_count + 1, origin)
+                evaluated_count += 1
+                if row is not None:
+                    results.append(row)
+                    generation_results.append(row)
+                    generation_best = max(generation_best, float(row["score"]))
+                    leaderboard_rows = _strategy_forge_quick_public_rows(results, describe_candidate, limit=8)
+                    leaderboard_seeds = _strategy_forge_quick_seed_candidates(results, limit=8)
+                    _strategy_forge_quick_update(
+                        job_id,
+                        evaluated_count=evaluated_count,
+                        current_score=float(row["score"]),
+                        leaderboard=leaderboard_rows,
+                        seed_candidates=leaderboard_seeds,
+                        seed_count=len(leaderboard_seeds),
+                        generation_rows=_strategy_forge_quick_public_rows(generation_results, describe_candidate, limit=8),
+                    )
+                else:
+                    _strategy_forge_quick_update(job_id, evaluated_count=evaluated_count)
+                if evaluated_count >= trial_count:
+                    break
+
+            results.sort(key=_strategy_forge_quick_sort_key, reverse=True)
+            if generation_best > best_score + 0.000001:
+                best_score = generation_best
+                stale_generations = 0
+            else:
+                stale_generations += 1
+            generation_index += 1
+            display_best_score = None if best_score <= -999998.0 else best_score
+            leaderboard_rows = _strategy_forge_quick_public_rows(results, describe_candidate, limit=8)
+            leaderboard_seeds = _strategy_forge_quick_seed_candidates(results, limit=8)
+            _strategy_forge_quick_update(
+                job_id,
+                phase="generation complete",
+                generation_index=generation_index,
+                evaluated_count=evaluated_count,
+                stale_generations=stale_generations,
+                best_score=display_best_score,
+                leaderboard=leaderboard_rows,
+                seed_candidates=leaderboard_seeds,
+                seed_count=len(leaderboard_seeds),
+                generation_rows=_strategy_forge_quick_public_rows(generation_results, describe_candidate, limit=8),
+            )
+            if evaluated_count >= trial_count or stale_generations >= patience:
+                break
+
+            elites = [row["candidate"] for row in results[:elite_count]]
+            next_population: list[dict[str, Any]] = []
+            next_seen: set[str] = set()
+            _strategy_forge_quick_update(job_id, phase="breeding next generation")
+            breeding_attempts = 0
+            max_breeding_attempts = max(20, population_size * 50)
+            while (
+                len(next_population) < population_size
+                and evaluated_count + len(next_population) < trial_count
+                and breeding_attempts < max_breeding_attempts
+            ):
+                breeding_attempts += 1
+                detail = ""
+                if len(elites) >= 2 and generator.random.random() < 0.60:
+                    parents = generator.random.sample(elites, 2)
+                    child = generator.crossover_candidates(parents[0], parents[1])
+                    origin = "crossover"
+                    detail = "elite parents"
+                elif elites and generator.random.random() < 0.85:
+                    parent = generator.random.choice(elites)
+                    child = generator.mutate_candidate(parent)
+                    origin = "mutation"
+                    detail = "elite mutation"
+                else:
+                    child = generator.random_candidate(symbols=active_symbols, timeframe=tf)
+                    origin = "random immigrant"
+                    detail = "new candidate"
+                signature = candidate_signature(child)
+                if signature in seen or signature in next_seen:
+                    continue
+                next_seen.add(signature)
+                combo_text = describe_candidate(child)
+                _strategy_forge_quick_event(
+                    events,
+                    kind=origin,
+                    generation=generation_index,
+                    timeframe=", ".join(candidate_rule_timeframes(child)),
+                    combo=combo_text,
+                    detail=detail,
+                )
+                next_population.append({"candidate": child, "origin": origin, "detail": detail})
+                _strategy_forge_quick_update(
+                    job_id,
+                    events=events,
+                    current_origin=origin,
+                    current_combo=combo_text,
+                    population_index=len(next_population),
+                    population_size=population_size,
+                )
+            if not next_population:
+                _strategy_forge_quick_update(job_id, phase="candidate pool exhausted")
+            population = next_population
+
+        if not results:
+            _strategy_forge_quick_update(
+                job_id,
+                status="error",
+                phase="no valid combo",
+                error="Strategy Forge did not produce a valid evolved combo. Try more candles or more evaluations.",
+            )
+            return
+
+        top_rows = results[: min(8, len(results))]
+        _strategy_forge_quick_update(job_id, phase="saving top performers")
+        for row in top_rows:
+            metrics = dict(row["metrics"])
+            grade, reasons, robustness_score = grade_combo_metrics(metrics, min_trades=min_trade_count)
+            aggregate_result = BacktestResult(
+                candidate=row["candidate"],
+                symbol=",".join(active_symbols),
+                timeframe=tf,
+                metrics=metrics,
+                trades=[],
+                equity_curve=[],
+            )
+            try:
+                run_id = store_backtest_result(
+                    aggregate_result,
+                    db_path=forge_db_path,
+                    in_sample_score=float(row["score"]),
+                    validation_score=0.0,
+                    out_of_sample_score=0.0,
+                    walk_forward_score=0.0,
+                    robustness_score=float(robustness_score),
+                    final_grade=grade,
+                )
+                store_robustness_test(
+                    run_id,
+                    {
+                        "rejected": grade == "Reject",
+                        "reasons": reasons,
+                        "parameter_stability_score": 0.0,
+                        "symbol_stability_score": 1.0 if float(metrics.get("worst_symbol_return") or 0.0) > 0 else 0.5,
+                        "time_window_stability_score": 0.0,
+                        "regime_score": 0.0,
+                        "monte_carlo_score": 0.0,
+                        "robustness_score": robustness_score,
+                        "final_grade": grade,
+                        "instability_penalty": 1.0 - float(robustness_score),
+                    },
+                    db_path=forge_db_path,
+                )
+            except Exception:
+                run_id = 0
+            row["run_id"] = int(run_id)
+            row["grade"] = grade
+            row["reasons"] = reasons
+
+        final_leaderboard = _strategy_forge_quick_public_rows(top_rows, describe_candidate, limit=8)
+        final_seed_candidates = _strategy_forge_quick_seed_candidates(top_rows, limit=8)
+        _strategy_forge_quick_update(
+            job_id,
+            status="completed",
+            phase="complete",
+            generation_index=generation_index,
+            evaluated_count=evaluated_count,
+            stale_generations=stale_generations,
+            best_score=None if best_score <= -999998.0 else best_score,
+            current_origin="winner",
+            current_combo=describe_candidate(top_rows[0]["candidate"]),
+            current_score=float(top_rows[0]["score"]),
+            leaderboard=final_leaderboard,
+            seed_candidates=final_seed_candidates,
+            seed_count=len(final_seed_candidates),
+            generation_rows=[],
+            events=events,
+            data_errors=data_errors,
+        )
+    except Exception as exc:
+        _strategy_forge_quick_update(
+            job_id,
+            status="error",
+            phase="failed",
+            error=str(exc),
+        )
+
+
+def _strategy_forge_quick_indicatorforge_script_path(broker_hint: str) -> str:
+    hint = _normalize_market_source_hint(str(broker_hint or "robinhood"))
+    if hint == "robinhood_crypto":
+        return "scripts/indicatorforge.crypto.robinhood.py"
+    if hint == "schwab":
+        return "scripts/indicatorforge.schwab.py"
+    return "scripts/indicatorforge.robinhood.py"
+
+
+def _strategy_forge_quick_default_params_for_script(script_path: str) -> dict[str, Any]:
+    defs = _base_algo_form_defs().get(_normalize_script_path(script_path), {})
+    out: dict[str, Any] = {}
+    for item in defs.get("params") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if not key or "default" not in item:
+            continue
+        out[key] = copy.deepcopy(item.get("default"))
+    return out
+
+
+def _strategy_forge_quick_saved_name(run_id: int, candidate: dict[str, Any], timeframe: str) -> str:
+    symbols = candidate.get("symbols") if isinstance(candidate.get("symbols"), list) else []
+    symbol_text = ", ".join(str(symbol).upper() for symbol in symbols[:3] if str(symbol).strip())
+    if len(symbols) > 3:
+        symbol_text += f" +{len(symbols) - 3}"
+    base = f"Forge #{int(run_id)}"
+    if symbol_text:
+        base += f" {symbol_text}"
+    if timeframe:
+        base += f" {timeframe}"
+    return base
+
+
+@app.post("/partials/strategy_forge_save_finalist", response_class=HTMLResponse)
+def partial_strategy_forge_save_finalist(
+    run_id: int = Form(...),
+    broker_hint: str = Form("robinhood"),
+    include_extended_hours_data: str = Form("false"),
+    db_path: str = Form(""),
+):
+    try:
+        from strategy_forge import DEFAULT_DB_PATH as FORGE_DEFAULT_DB_PATH
+        from strategy_forge.paper_trade_exporter import indicatorforge_rules
+        from strategy_forge.result_store import get_run
+    except Exception as exc:
+        return HTMLResponse(f"<span class='small'>Strategy Forge unavailable: {html.escape(str(exc))}</span>", status_code=500)
+
+    try:
+        forge_db_path = Path(str(db_path).strip()) if str(db_path or "").strip() else FORGE_DEFAULT_DB_PATH
+        run = get_run(int(run_id), db_path=forge_db_path)
+    except Exception as exc:
+        return HTMLResponse(f"<span class='small'>Could not load finalist: {html.escape(str(exc))}</span>", status_code=400)
+    if not run:
+        return HTMLResponse("<span class='small'>Finalist run not found.</span>", status_code=404)
+
+    candidate = run.get("candidate") if isinstance(run.get("candidate"), dict) else {}
+    rules = indicatorforge_rules(candidate)
+    if not rules:
+        return HTMLResponse("<span class='small'>No IndicatorForge-compatible rules were found for this finalist.</span>", status_code=400)
+
+    script_path = _strategy_forge_quick_indicatorforge_script_path(broker_hint)
+    discover_base_scripts()
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM base_scripts WHERE lower(path)=?", (script_path.lower(),))
+    base_row = cur.fetchone()
+    if not base_row:
+        conn.close()
+        return HTMLResponse(f"<span class='small'>Base script not found: {html.escape(script_path)}</span>", status_code=400)
+
+    include_extended = str(include_extended_hours_data or "").strip().lower() in ("1", "true", "yes", "on")
+    symbols = candidate.get("symbols") if isinstance(candidate.get("symbols"), list) else []
+    if not symbols:
+        symbols = [s.strip().upper() for s in str(run.get("symbol") or "").split(",") if s.strip()]
+    timeframe = str(candidate.get("timeframe") or run.get("timeframe") or "1h").strip().lower() or "1h"
+    params = _strategy_forge_quick_default_params_for_script(script_path)
+    params.update(
+        {
+            "symbols": [str(symbol).upper() for symbol in symbols if str(symbol).strip()],
+            "timeframe": timeframe,
+            "include_extended_hours_data": include_extended,
+            "indicator_rules_json": json.dumps(rules, sort_keys=True),
+            "strategy_forge_source_run_id": int(run_id),
+            "strategy_forge_candidate_json": json.dumps(candidate, sort_keys=True),
+        }
+    )
+    candidate_params = candidate.get("parameters") if isinstance(candidate.get("parameters"), dict) else {}
+    if candidate_params:
+        combo_rule_count = len(candidate_params.get("rules") or [])
+        params["strategy_forge_entry_threshold"] = int(candidate_params.get("entry_threshold") or combo_rule_count or len(rules))
+        params["strategy_forge_exit_threshold"] = int(candidate_params.get("exit_threshold") or 1)
+        params["strategy_forge_combo_rule_count"] = combo_rule_count
+    name = _strategy_forge_quick_saved_name(int(run_id), candidate, timeframe)
+    params_json = _sanitize_algorithm_params_for_script(json.dumps(params), script_path)
+    cur.execute(
+        """INSERT INTO algorithms
+        (name, base_script_id, rulesets_json, params_json, max_runtime_min, restart_on_crash, log_level, created_ts)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            name,
+            int(base_row["id"]),
+            json.dumps([]),
+            params_json,
+            0,
+            1,
+            "INFO",
+            _utc_ts(),
+        ),
+    )
+    algo_id = int(cur.lastrowid)
+    conn.commit()
+    conn.close()
+    escaped_name = html.escape(name)
+    return HTMLResponse(
+        f"<span class='small'>Saved <a href='/algorithms/{algo_id}/edit'>{escaped_name}</a>.</span>"
+    )
+
+
+def _strategy_forge_quick_start_job(
+    *,
+    timeframe: str,
+    symbols: str,
+    trials: int,
+    min_trades: int,
+    min_rules: int = 2,
+    max_rules: int = 5,
+    broker_hint: str = "robinhood",
+    include_extended_hours_data: bool = False,
+    db_path: Optional[str | Path] = None,
+    template: str = "",
+    seed_mode: str = "random",
+    seed_job_id: str = "",
+) -> str:
+    symbol_list = _clean_symbol_list(symbols)
+    job_id = uuid4().hex
+    tf = str(timeframe or "1h").strip().lower() or "1h"
+    trial_count = max(1, min(int(trials or 250), 5000))
+    min_trade_count = max(1, min(int(min_trades or 100), 10000))
+    min_rule_count = max(2, min(int(min_rules or 2), 30))
+    max_rule_count = max(min_rule_count, min(int(max_rules or 5), 30))
+    normalized_seed_mode = str(seed_mode or "random").strip().lower()
+    if normalized_seed_mode not in {"leaderboard"}:
+        normalized_seed_mode = "random"
+    normalized_seed_job_id = str(seed_job_id or "").strip() if normalized_seed_mode == "leaderboard" else ""
+    now = time.time()
+    with STRATEGY_FORGE_QUICK_LOCK:
+        STRATEGY_FORGE_QUICK_JOBS[job_id] = {
+            "id": job_id,
+            "status": "queued" if symbol_list else "error",
+            "phase": "queued" if symbol_list else "input needed",
+            "error": "" if symbol_list else "Enter at least one symbol before running Strategy Forge.",
+            "created_ts": now,
+            "updated_ts": now,
+            "symbol_list": symbol_list,
+            "active_symbols": [],
+            "timeframe": tf,
+            "trial_count": trial_count,
+            "min_trades": min_trade_count,
+            "min_rules": min_rule_count,
+            "max_rules": max_rule_count,
+            "generation_index": 0,
+            "evaluated_count": 0,
+            "population_index": 0,
+            "population_size": 0,
+            "stale_generations": 0,
+            "patience": 0,
+            "best_score": None,
+            "current_score": None,
+            "current_origin": "",
+            "current_combo": "",
+            "leaderboard": [],
+            "generation_rows": [],
+            "seed_candidates": [],
+            "seed_mode": normalized_seed_mode,
+            "seed_job_id": normalized_seed_job_id,
+            "seed_source_job_id": normalized_seed_job_id,
+            "seed_count": 0,
+            "events": [],
+            "data_errors": [],
+            "db_path": str(db_path or ""),
+            "template": str(template or ""),
+        }
+        _strategy_forge_quick_prune_locked()
+
+    if symbol_list:
+        thread = threading.Thread(
+            target=_strategy_forge_quick_worker,
+            args=(
+                job_id,
+                {
+                    "symbol_list": symbol_list,
+                    "timeframe": tf,
+                    "trials": trial_count,
+                    "min_trades": min_trade_count,
+                    "min_rules": min_rule_count,
+                    "max_rules": max_rule_count,
+                    "broker_hint": broker_hint,
+                    "include_extended_hours_data": include_extended_hours_data,
+                    "db_path": str(db_path) if db_path is not None else None,
+                    "template": template,
+                    "seed_mode": normalized_seed_mode,
+                    "seed_job_id": normalized_seed_job_id,
+                },
+            ),
+            daemon=True,
+        )
+        thread.start()
+    return job_id
+
+
 def _render_strategy_forge_quick_html(
     *,
     timeframe: str,
     symbols: str,
     trials: int,
     min_trades: int,
+    min_rules: int = 2,
+    max_rules: int = 5,
     broker_hint: str = "robinhood",
     include_extended_hours_data: bool = False,
     db_path: Optional[str | Path] = None,
     template: str = "",
+    seed_mode: str = "random",
+    seed_job_id: str = "",
 ) -> str:
-    symbol_list = _clean_symbol_list(symbols)
-    if not symbol_list:
-        return "<div class='small'>Enter at least one symbol before running Strategy Forge.</div>"
-    tf = str(timeframe or "1h").strip().lower() or "1h"
-    trial_count = max(1, min(int(trials or 250), 5000))
-    min_trade_count = max(1, min(int(min_trades or 100), 10000))
-    source_hint = _normalize_market_source_hint(broker_hint)
-    include_extended = True if source_hint == "robinhood_crypto" else bool(include_extended_hours_data)
-
-    try:
-        from strategy_forge import DEFAULT_DB_PATH as FORGE_DEFAULT_DB_PATH
-        from strategy_forge.backtest_runner import BacktestConfig, BacktestResult, run_backtest
-        from strategy_forge.combo_search import (
-            OpenComboGenerator,
-            aggregate_result_metrics,
-            candidate_signature,
-            combo_search_score,
-            describe_candidate,
-            grade_combo_metrics,
-        )
-        from strategy_forge.data_loader import normalize_rows
-        from strategy_forge.result_store import store_backtest_result, store_robustness_test
-    except Exception as exc:
-        return f"<div class='small'>Strategy Forge unavailable: {html.escape(str(exc))}</div>"
-    forge_db_path = Path(db_path) if db_path is not None else FORGE_DEFAULT_DB_PATH
-
-    if source_hint in ("robinhood", "robinhood_crypto"):
-        ok, msg = _ensure_robinhood_markets_session()
-        if not ok:
-            return f"<div class='small'>Strategy Forge unavailable: {html.escape(msg)}</div>"
-
-    datasets = []
-    data_errors: list[str] = []
-    for symbol in symbol_list:
-        try:
-            opens, highs, lows, closes, raw_rows, requested_bounds = _market_fetch_ohlc(
-                symbol,
-                tf,
-                broker_hint=source_hint,
-                min_candles=360,
-                include_extended=include_extended,
-            )
-            if raw_rows:
-                data = normalize_rows(raw_rows, symbol=symbol, timeframe=tf, source=f"ui:{requested_bounds}")
-            else:
-                rows = [
-                    {
-                        "timestamp": str(i),
-                        "open": opens[i],
-                        "high": highs[i],
-                        "low": lows[i],
-                        "close": closes[i],
-                        "volume": 0.0,
-                    }
-                    for i in range(min(len(opens), len(highs), len(lows), len(closes)))
-                ]
-                data = normalize_rows(rows, symbol=symbol, timeframe=tf, source="ui:synthetic_ohlc")
-            if len(data) < 80:
-                data_errors.append(f"{symbol}: only {len(data)} candles")
-                continue
-            datasets.append(data)
-        except Exception as exc:
-            data_errors.append(f"{symbol}: {exc}")
-
-    if not datasets:
-        detail = "; ".join(html.escape(str(v)) for v in data_errors[:4])
-        return f"<div class='small'>Strategy Forge needs more usable candles. {detail}</div>"
-
-    active_symbols = [str(data.symbol).upper() for data in datasets]
-    generator = OpenComboGenerator(seed=int(time.time()), min_rules=2, max_rules=5)
-    bt_config = BacktestConfig(
-        initial_capital=100000.0,
-        commission_pct=0.0005,
-        slippage_bps=2.0,
+    job_id = _strategy_forge_quick_start_job(
+        timeframe=timeframe,
+        symbols=symbols,
+        trials=trials,
+        min_trades=min_trades,
+        min_rules=min_rules,
+        max_rules=max_rules,
+        broker_hint=broker_hint,
+        include_extended_hours_data=include_extended_hours_data,
+        db_path=db_path,
+        template=template,
+        seed_mode=seed_mode,
+        seed_job_id=seed_job_id,
     )
-
-    def _evaluate_candidate(candidate: Any, generation: int) -> Optional[dict[str, Any]]:
-        try:
-            symbol_results = [run_backtest(data, copy.deepcopy(candidate), bt_config) for data in datasets]
-            metrics = aggregate_result_metrics(symbol_results)
-            score = combo_search_score(metrics, min_trades=min_trade_count)
-            return {
-                "candidate": candidate,
-                "generation": generation,
-                "score": float(score),
-                "metrics": metrics,
-                "symbol_results": symbol_results,
-            }
-        except Exception:
-            return None
-
-    population_size = max(2, min(40, max(2, trial_count // 4)))
-    elite_count = max(1, min(8, population_size // 4))
-    patience = max(3, min(30, trial_count // max(1, population_size)))
-    generation_index = 0
-    evaluated_count = 0
-    best_score = -999999.0
-    stale_generations = 0
-    seen: set[str] = set()
-    results: list[dict[str, Any]] = []
-
-    population = [generator.random_candidate(symbols=active_symbols, timeframe=tf) for _ in range(min(population_size, trial_count))]
-    while population and evaluated_count < trial_count and stale_generations < patience:
-        generation_best = -999999.0
-        for candidate in population:
-            signature = candidate_signature(candidate)
-            if signature in seen:
-                continue
-            seen.add(signature)
-            row = _evaluate_candidate(candidate, generation_index)
-            evaluated_count += 1
-            if row is not None:
-                results.append(row)
-                generation_best = max(generation_best, float(row["score"]))
-            if evaluated_count >= trial_count:
-                break
-
-        results.sort(
-            key=lambda r: (
-                float(r["score"]),
-                float(r["metrics"].get("total_return") or 0.0),
-                float(r["metrics"].get("worst_symbol_return") or 0.0),
-                -float(r["metrics"].get("max_drawdown") or 0.0),
-            ),
-            reverse=True,
-        )
-        if generation_best > best_score + 0.000001:
-            best_score = generation_best
-            stale_generations = 0
-        else:
-            stale_generations += 1
-        generation_index += 1
-        if evaluated_count >= trial_count or stale_generations >= patience:
-            break
-
-        elites = [row["candidate"] for row in results[:elite_count]]
-        next_population = []
-        next_seen: set[str] = set()
-        while len(next_population) < population_size and evaluated_count + len(next_population) < trial_count:
-            if len(elites) >= 2 and generator.random.random() < 0.60:
-                parents = generator.random.sample(elites, 2)
-                child = generator.crossover_candidates(parents[0], parents[1])
-            elif elites and generator.random.random() < 0.85:
-                child = generator.mutate_candidate(generator.random.choice(elites))
-            else:
-                child = generator.random_candidate(symbols=active_symbols, timeframe=tf)
-            signature = candidate_signature(child)
-            if signature in seen or signature in next_seen:
-                continue
-            next_seen.add(signature)
-            next_population.append(child)
-        population = next_population
-
-    if not results:
-        return "<div class='small'>Strategy Forge did not produce a valid evolved combo. Try more candles or more evaluations.</div>"
-
-    top_rows = results[: min(8, len(results))]
-    for row in top_rows:
-        metrics = dict(row["metrics"])
-        grade, reasons, robustness_score = grade_combo_metrics(metrics, min_trades=min_trade_count)
-        aggregate_result = BacktestResult(
-            candidate=row["candidate"],
-            symbol=",".join(active_symbols),
-            timeframe=tf,
-            metrics=metrics,
-            trades=[],
-            equity_curve=[],
-        )
-        try:
-            run_id = store_backtest_result(
-                aggregate_result,
-                db_path=forge_db_path,
-                in_sample_score=float(row["score"]),
-                validation_score=0.0,
-                out_of_sample_score=0.0,
-                walk_forward_score=0.0,
-                robustness_score=float(robustness_score),
-                final_grade=grade,
-            )
-            store_robustness_test(
-                run_id,
-                {
-                    "rejected": grade == "Reject",
-                    "reasons": reasons,
-                    "parameter_stability_score": 0.0,
-                    "symbol_stability_score": 1.0 if float(metrics.get("worst_symbol_return") or 0.0) > 0 else 0.5,
-                    "time_window_stability_score": 0.0,
-                    "regime_score": 0.0,
-                    "monte_carlo_score": 0.0,
-                    "robustness_score": robustness_score,
-                    "final_grade": grade,
-                    "instability_penalty": 1.0 - float(robustness_score),
-                },
-                db_path=forge_db_path,
-            )
-        except Exception:
-            run_id = 0
-        row["run_id"] = int(run_id)
-        row["grade"] = grade
-        row["reasons"] = reasons
-
-    def _fmt_pct(value: Any) -> str:
-        try:
-            return f"{float(value) * 100.0:.2f}%"
-        except Exception:
-            return "—"
-
-    def _fmt_num(value: Any) -> str:
-        try:
-            return f"{float(value):.3f}"
-        except Exception:
-            return "—"
-
-    rows: list[str] = [
-        "<div class='status-table-wrap'><table>",
-        "<thead><tr><th>Run</th><th>Grade</th><th>Score</th><th>Avg Return</th><th>Worst</th><th>Drawdown</th><th>PF</th><th>Win</th><th>Trades</th><th>Indicators</th></tr></thead><tbody>",
-    ]
-    for row in top_rows:
-        metrics = dict(row["metrics"])
-        params_txt = describe_candidate(row["candidate"])
-        reasons = row["reasons"]
-        if reasons:
-            params_txt += " · " + ", ".join(str(v) for v in reasons[:2])
-        rows.append(
-            "<tr>"
-            f"<td>#{int(row['run_id'])}</td>"
-            f"<td>{html.escape(str(row['grade']))}</td>"
-            f"<td>{_fmt_num(row['score'])}</td>"
-            f"<td>{_fmt_pct(metrics.get('total_return'))}</td>"
-            f"<td>{_fmt_pct(metrics.get('worst_symbol_return'))}</td>"
-            f"<td>{_fmt_pct(metrics.get('max_drawdown'))}</td>"
-            f"<td>{_fmt_num(metrics.get('profit_factor'))}</td>"
-            f"<td>{_fmt_pct(metrics.get('win_rate'))}</td>"
-            f"<td>{int(metrics.get('trade_count') or 0)}</td>"
-            f"<td class='small'>{html.escape(params_txt)}</td>"
-            "</tr>"
-        )
-    rows.append("</tbody></table></div>")
-    if data_errors:
-        rows.append(
-            "<div class='small' style='margin-top:6px;'>Skipped data: "
-            + html.escape("; ".join(str(v) for v in data_errors[:4]))
-            + "</div>"
-        )
-    rows.append(
-        "<div class='small' style='margin-top:6px;'>"
-        f"Strategy Forge · open combo evolution · {html.escape(', '.join(active_symbols))} {html.escape(tf)} · "
-        f"evaluated={evaluated_count}/{trial_count} · generations={generation_index} · "
-        f"min trades={min_trade_count} · DB={html.escape(str(forge_db_path))}"
-        "</div>"
-    )
-    return "".join(rows)
+    return _render_strategy_forge_quick_status_html(job_id)
 
 
 @app.get("/partials/strategy_forge_quick", response_class=HTMLResponse)
@@ -14239,6 +15273,10 @@ def partial_strategy_forge_quick(
     template: str = "",
     trials: int = 250,
     min_trades: int = 100,
+    min_rules: int = 2,
+    max_rules: int = 5,
+    seed_mode: str = "random",
+    seed_job_id: str = "",
 ):
     include_extended = str(include_extended_hours_data or "").strip().lower() in ("1", "true", "yes", "on")
     return HTMLResponse(
@@ -14248,10 +15286,19 @@ def partial_strategy_forge_quick(
             template=str(template or ""),
             trials=max(1, min(int(trials or 250), 5000)),
             min_trades=max(1, min(int(min_trades or 100), 10000)),
+            min_rules=max(2, min(int(min_rules or 2), 30)),
+            max_rules=max(2, min(int(max_rules or 5), 30)),
             broker_hint=str(broker_hint or "robinhood"),
             include_extended_hours_data=include_extended,
+            seed_mode=str(seed_mode or "random"),
+            seed_job_id=str(seed_job_id or ""),
         )
     )
+
+
+@app.get("/partials/strategy_forge_quick_status", response_class=HTMLResponse)
+def partial_strategy_forge_quick_status(job_id: str = ""):
+    return HTMLResponse(_render_strategy_forge_quick_status_html(str(job_id or "")))
 
 
 @app.get("/partials/markets_news", response_class=HTMLResponse)

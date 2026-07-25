@@ -1,4 +1,6 @@
 import importlib.util
+import io
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
@@ -190,6 +192,47 @@ class IndicatorForgeRobinhoodSessionTests(unittest.TestCase):
         self.assertTrue(out["buy_ok"])
         self.assertFalse(out["sell_ok"])
         self.assertIn("trend=up", out["value"])
+
+    def test_daily_regular_candles_do_not_emit_extended_missing_notice(self):
+        rows = [{"begins_at": "2026-07-24T00:00:00Z", "close_price": "10.00"}]
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            self.mod._log_historical_candles(
+                symbol="PSLV",
+                timeframe="1d",
+                extended_enabled=True,
+                requested_bounds="regular",
+                rows=rows,
+                chart_count=len(rows),
+                indicator_count=len(rows),
+                synthetically_modified=False,
+            )
+
+        text = buf.getvalue()
+        self.assertIn("Historical candles", text)
+        self.assertNotIn("Extended-hours candles not returned", text)
+        self.assertNotIn("EXTENDED_HOURS_CANDLES_NOT_RETURNED", text)
+
+    def test_intraday_missing_extended_candles_emit_info_fallback_notice(self):
+        rows = [{"begins_at": "2026-07-24T15:00:00Z", "close_price": "10.00", "session": "reg"}]
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            self.mod._log_historical_candles(
+                symbol="PSLV",
+                timeframe="5m",
+                extended_enabled=True,
+                requested_bounds="extended",
+                rows=rows,
+                chart_count=len(rows),
+                indicator_count=len(rows),
+                synthetically_modified=False,
+            )
+
+        text = buf.getvalue()
+        self.assertIn("Extended-hours candles not returned; using regular-session candles", text)
+        self.assertNotIn("EXTENDED_HOURS_CANDLES_NOT_RETURNED", text)
 
     def test_indicatorforge_chart_payload_preserves_ohlc_for_sar(self):
         closes = [10.0, 11.0, 12.0, 13.0]

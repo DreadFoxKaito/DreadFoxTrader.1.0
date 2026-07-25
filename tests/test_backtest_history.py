@@ -29,6 +29,13 @@ def _ohlc_rows(count, *, session="reg", start=0):
     ]
 
 
+def _ohlcv_from_rows(rows, *, requested_bounds="regular"):
+    opens, highs, lows, closes = main._market_extract_ohlc(rows)
+    volumes = [float(row.get("volume") or 0.0) for row in rows]
+    timestamps = [str(row.get("begins_at") or "") for row in rows]
+    return opens, highs, lows, closes, volumes, timestamps, rows, requested_bounds
+
+
 class BacktestHistoryTests(unittest.TestCase):
     def test_robinhood_1h_keeps_best_span_when_requested_count_is_too_high(self):
         counts = {
@@ -189,14 +196,13 @@ class BacktestHistoryTests(unittest.TestCase):
         self.assertEqual(closes, [101.0, 102.0, 105.0])
 
     def test_indicatorforge_preview_renders_unsaved_rules_without_500(self):
-        def fake_ohlc(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
+        def fake_ohlcv(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
             rows = _ohlc_rows(max(40, int(min_candles or 0)))
-            opens, highs, lows, closes = main._market_extract_ohlc(rows)
-            return opens, highs, lows, closes, rows, "regular"
+            return _ohlcv_from_rows(rows)
 
         with (
             mock.patch.object(main, "_ensure_robinhood_markets_session", return_value=(True, "")),
-            mock.patch.object(main, "_market_fetch_ohlc", fake_ohlc),
+            mock.patch.object(main, "_market_fetch_ohlcv", fake_ohlcv),
         ):
             html = main._render_indicatorforge_preview_html(
                 timeframe="1h",
@@ -212,7 +218,7 @@ class BacktestHistoryTests(unittest.TestCase):
     def test_indicatorforge_crypto_preview_uses_24_7_crypto_source(self):
         calls = []
 
-        def fake_ohlc(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
+        def fake_ohlcv(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
             calls.append(
                 {
                     "symbol": symbol,
@@ -221,12 +227,11 @@ class BacktestHistoryTests(unittest.TestCase):
                 }
             )
             rows = _ohlc_rows(max(40, int(min_candles or 0)))
-            opens, highs, lows, closes = main._market_extract_ohlc(rows)
-            return opens, highs, lows, closes, rows, "24_7"
+            return _ohlcv_from_rows(rows, requested_bounds="24_7")
 
         with (
             mock.patch.object(main, "_ensure_robinhood_markets_session", return_value=(True, "")),
-            mock.patch.object(main, "_market_fetch_ohlc", fake_ohlc),
+            mock.patch.object(main, "_market_fetch_ohlcv", fake_ohlcv),
             mock.patch.object(main, "_market_fetch_crypto_quote", return_value=None),
         ):
             html = main._render_indicatorforge_preview_html(
@@ -246,7 +251,7 @@ class BacktestHistoryTests(unittest.TestCase):
         check_calls = []
         chart_calls = []
 
-        def fake_ohlc(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
+        def fake_ohlcv(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
             rows = [
                 {
                     "open_price": str(100 + i),
@@ -256,8 +261,7 @@ class BacktestHistoryTests(unittest.TestCase):
                 }
                 for i in range(max(40, int(min_candles or 0)))
             ]
-            opens, highs, lows, closes = main._market_extract_ohlc(rows)
-            return opens, highs, lows, closes, rows, "24_7"
+            return _ohlcv_from_rows(rows, requested_bounds="24_7")
 
         def fake_checks(rules, closes, price, **kwargs):
             check_calls.append({"closes": list(closes), "price": price, "kwargs": dict(kwargs)})
@@ -280,7 +284,7 @@ class BacktestHistoryTests(unittest.TestCase):
 
         with (
             mock.patch.object(main, "_ensure_robinhood_markets_session", return_value=(True, "")),
-            mock.patch.object(main, "_market_fetch_ohlc", fake_ohlc),
+            mock.patch.object(main, "_market_fetch_ohlcv", fake_ohlcv),
             mock.patch.object(main, "_market_fetch_crypto_quote", return_value=105.0),
             mock.patch.object(main, "_build_indicator_rule_checks", fake_checks),
             mock.patch.object(main, "_market_chart_svg", fake_chart),
@@ -315,14 +319,13 @@ class BacktestHistoryTests(unittest.TestCase):
         self.assertIn("lows", chart_calls[0])
 
     def test_indicatorforge_preview_ignores_false_current_candle_param(self):
-        def fake_ohlc(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
+        def fake_ohlcv(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
             rows = _ohlc_rows(40)
-            opens, highs, lows, closes = main._market_extract_ohlc(rows)
-            return opens, highs, lows, closes, rows, "regular"
+            return _ohlcv_from_rows(rows)
 
         with (
             mock.patch.object(main, "_ensure_robinhood_markets_session", return_value=(True, "")),
-            mock.patch.object(main, "_market_fetch_ohlc", fake_ohlc),
+            mock.patch.object(main, "_market_fetch_ohlcv", fake_ohlcv),
         ):
             html = main._render_indicatorforge_preview_html(
                 timeframe="1h",
@@ -336,10 +339,9 @@ class BacktestHistoryTests(unittest.TestCase):
         self.assertIn(">41.00</td>", html)
 
     def test_indicatorforge_preview_accepts_english_ichimoku_names(self):
-        def fake_ohlc(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
+        def fake_ohlcv(symbol, timeframe, broker_hint="robinhood", *, min_candles=0, include_extended=False):
             rows = _ohlc_rows(max(80, int(min_candles or 0)))
-            opens, highs, lows, closes = main._market_extract_ohlc(rows)
-            return opens, highs, lows, closes, rows, "regular"
+            return _ohlcv_from_rows(rows)
 
         rules_json = """
         [{
@@ -358,7 +360,7 @@ class BacktestHistoryTests(unittest.TestCase):
 
         with (
             mock.patch.object(main, "_ensure_robinhood_markets_session", return_value=(True, "")),
-            mock.patch.object(main, "_market_fetch_ohlc", fake_ohlc),
+            mock.patch.object(main, "_market_fetch_ohlcv", fake_ohlcv),
         ):
             html = main._render_indicatorforge_preview_html(
                 timeframe="1h",

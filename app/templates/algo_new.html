@@ -1035,7 +1035,7 @@
         <div class="row" style="align-items:flex-end; margin-bottom:8px;">
           <div style="min-width:260px;">
             <label class="small">Search Mode</label>
-            <div class="small">Open combo evolution: tests 2+ indicators, mutates settings, and keeps higher-return candidates.</div>
+            <div class="small">Open combo evolution: tests 2+ indicators, mutates settings and indicator timeframes, and keeps higher-return candidates.</div>
           </div>
           <div style="min-width:120px;">
             <label class="small" for="if_forge_trials">Max Evaluations</label>
@@ -1045,13 +1045,24 @@
             <label class="small" for="if_forge_min_trades">Min Trades</label>
             <input id="if_forge_min_trades" name="min_trades" type="number" min="1" max="10000" step="1" value="100" style="width:140px;" />
           </div>
+          <div style="min-width:130px;">
+            <label class="small" for="if_forge_min_rules">Min Indicators</label>
+            <input id="if_forge_min_rules" name="min_rules" type="number" min="2" max="30" step="1" value="2" style="width:130px;" />
+          </div>
+          <div style="min-width:130px;">
+            <label class="small" for="if_forge_max_rules">Max Indicators</label>
+            <input id="if_forge_max_rules" name="max_rules" type="number" min="2" max="30" step="1" value="5" style="width:130px;" />
+          </div>
           <button type="button" class="btn primary" id="if_forge_run_btn">Run Forge</button>
+          <button type="button" class="btn" id="if_forge_random_btn">New Random Set</button>
           <div class="small">Stores Strategy Forge runs in the research database. Exports stay paper-only unless explicitly changed later.</div>
         </div>
         <input type="hidden" id="if_forge_nonce" name="_nonce" value="" />
+        <input type="hidden" id="if_forge_seed_mode" name="seed_mode" value="random" />
+        <input type="hidden" id="if_forge_seed_job_id" name="seed_job_id" value="" />
         <div id="if_forge_table"
              hx-get="/partials/strategy_forge_quick"
-             hx-include="#if_preview_symbols, #if_preview_timeframe, #if_preview_broker_hint, #if_preview_include_extended, #if_forge_trials, #if_forge_min_trades, #if_forge_nonce"
+             hx-include="#if_preview_symbols, #if_preview_timeframe, #if_preview_broker_hint, #if_preview_include_extended, #if_forge_trials, #if_forge_min_trades, #if_forge_min_rules, #if_forge_max_rules, #if_forge_seed_mode, #if_forge_seed_job_id, #if_forge_nonce"
              hx-trigger="strategy-forge-run"
              hx-swap="innerHTML"><div class="small">Ready.</div></div>
       </div>
@@ -1189,16 +1200,32 @@
     }
 
     function setForgeBusy(isBusy) {
-      const btn = b.querySelector("#if_forge_run_btn");
-      if (!btn) return;
-      btn.disabled = Boolean(isBusy);
-      btn.textContent = isBusy ? "Forging..." : "Run Forge";
+      const buttons = b.querySelectorAll("#if_forge_run_btn, #if_forge_random_btn, #if_forge_table [data-strategy-forge-action]");
+      buttons.forEach((btn) => {
+        if (!btn.dataset.idleText) btn.dataset.idleText = btn.textContent || "";
+        btn.disabled = Boolean(isBusy);
+        if (btn.id === "if_forge_run_btn") btn.textContent = isBusy ? "Forging..." : btn.dataset.idleText;
+      });
     }
 
-    function triggerForgeRunNow() {
+    function syncForgeBusyFromPanel() {
+      const panel = b.querySelector("#if_forge_table [data-forge-status]");
+      if (!panel) {
+        setForgeBusy(false);
+        return;
+      }
+      const status = String(panel.dataset.forgeStatus || "");
+      setForgeBusy(status === "queued" || status === "running");
+    }
+
+    function triggerForgeRunNow(seedMode = "random", seedJobId = "") {
       refreshPreviewInputsOnly();
       const forgeHost = b.querySelector("#if_forge_table");
       if (!forgeHost || !window.htmx) return;
+      const seedModeEl = b.querySelector("#if_forge_seed_mode");
+      const seedJobEl = b.querySelector("#if_forge_seed_job_id");
+      if (seedModeEl) seedModeEl.value = String(seedMode || "random");
+      if (seedJobEl) seedJobEl.value = String(seedJobId || "");
       const nonce = b.querySelector("#if_forge_nonce");
       if (nonce) nonce.value = String(Date.now());
       window.htmx.trigger(forgeHost, "strategy-forge-run");
@@ -3001,11 +3028,27 @@
       backtestHost.addEventListener("htmx:timeout", () => setBacktestRefreshBusy(false));
     }
     if (forgeRunBtn) {
-      forgeRunBtn.addEventListener("click", triggerForgeRunNow);
+      forgeRunBtn.addEventListener("click", () => triggerForgeRunNow("random", ""));
+    }
+    const forgeRandomBtn = b.querySelector("#if_forge_random_btn");
+    if (forgeRandomBtn) {
+      forgeRandomBtn.addEventListener("click", () => triggerForgeRunNow("random", ""));
     }
     if (forgeHost) {
+      forgeHost.addEventListener("click", (ev) => {
+        const actionBtn = ev.target && ev.target.closest ? ev.target.closest("[data-strategy-forge-action]") : null;
+        if (!actionBtn) return;
+        ev.preventDefault();
+        const action = String(actionBtn.dataset.strategyForgeAction || "");
+        if (action === "continue") {
+          triggerForgeRunNow("leaderboard", actionBtn.dataset.strategyForgeJobId || "");
+        } else if (action === "random") {
+          triggerForgeRunNow("random", "");
+        }
+      });
       forgeHost.addEventListener("htmx:beforeRequest", () => setForgeBusy(true));
-      forgeHost.addEventListener("htmx:afterRequest", () => setForgeBusy(false));
+      forgeHost.addEventListener("htmx:afterRequest", syncForgeBusyFromPanel);
+      forgeHost.addEventListener("htmx:afterSwap", syncForgeBusyFromPanel);
       forgeHost.addEventListener("htmx:responseError", () => setForgeBusy(false));
       forgeHost.addEventListener("htmx:sendError", () => setForgeBusy(false));
       forgeHost.addEventListener("htmx:timeout", () => setForgeBusy(false));
@@ -3451,7 +3494,7 @@
       <div class="row" style="align-items:flex-end; margin-bottom:8px;">
         <div style="min-width:260px;">
           <label class="small">Search Mode</label>
-          <div class="small">Open combo evolution: tests 2+ indicators and mutates settings.</div>
+          <div class="small">Open combo evolution: tests 2+ indicators and mutates settings plus indicator timeframes.</div>
         </div>
         <div style="min-width:120px;">
           <label class="small" for="generic_forge_trials">Max Evaluations</label>
@@ -3461,16 +3504,27 @@
           <label class="small" for="generic_forge_min_trades">Min Trades</label>
           <input id="generic_forge_min_trades" name="min_trades" type="number" min="1" max="10000" step="1" value="100" style="width:140px;" />
         </div>
+        <div style="min-width:130px;">
+          <label class="small" for="generic_forge_min_rules">Min Indicators</label>
+          <input id="generic_forge_min_rules" name="min_rules" type="number" min="2" max="30" step="1" value="2" style="width:130px;" />
+        </div>
+        <div style="min-width:130px;">
+          <label class="small" for="generic_forge_max_rules">Max Indicators</label>
+          <input id="generic_forge_max_rules" name="max_rules" type="number" min="2" max="30" step="1" value="5" style="width:130px;" />
+        </div>
         <button type="button" class="btn primary" id="generic_forge_run_btn">Run Forge</button>
+        <button type="button" class="btn" id="generic_forge_random_btn">New Random Set</button>
       </div>
       <input type="hidden" id="generic_forge_symbols" name="symbols" value="" />
       <input type="hidden" id="generic_forge_timeframe" name="timeframe" value="1h" />
       <input type="hidden" id="generic_forge_broker_hint" name="broker_hint" value="robinhood" />
       <input type="hidden" id="generic_forge_include_extended" name="include_extended_hours_data" value="false" />
+      <input type="hidden" id="generic_forge_seed_mode" name="seed_mode" value="random" />
+      <input type="hidden" id="generic_forge_seed_job_id" name="seed_job_id" value="" />
       <input type="hidden" id="generic_forge_nonce" name="_nonce" value="" />
       <div id="generic_forge_table"
            hx-get="/partials/strategy_forge_quick"
-           hx-include="#generic_forge_symbols, #generic_forge_timeframe, #generic_forge_broker_hint, #generic_forge_include_extended, #generic_forge_trials, #generic_forge_min_trades, #generic_forge_nonce"
+           hx-include="#generic_forge_symbols, #generic_forge_timeframe, #generic_forge_broker_hint, #generic_forge_include_extended, #generic_forge_trials, #generic_forge_min_trades, #generic_forge_min_rules, #generic_forge_max_rules, #generic_forge_seed_mode, #generic_forge_seed_job_id, #generic_forge_nonce"
            hx-trigger="strategy-forge-run"
            hx-swap="innerHTML"><div class="small">Ready.</div></div>
     `;
@@ -3505,25 +3559,59 @@
     }
 
     function setBusy(isBusy) {
-      const btn = forge.querySelector("#generic_forge_run_btn");
-      if (!btn) return;
-      btn.disabled = Boolean(isBusy);
-      btn.textContent = isBusy ? "Forging..." : "Run Forge";
+      const buttons = forge.querySelectorAll("#generic_forge_run_btn, #generic_forge_random_btn, #generic_forge_table [data-strategy-forge-action]");
+      buttons.forEach((btn) => {
+        if (!btn.dataset.idleText) btn.dataset.idleText = btn.textContent || "";
+        btn.disabled = Boolean(isBusy);
+        if (btn.id === "generic_forge_run_btn") btn.textContent = isBusy ? "Forging..." : btn.dataset.idleText;
+      });
+    }
+
+    function syncBusyFromPanel() {
+      const panel = forge.querySelector("#generic_forge_table [data-forge-status]");
+      if (!panel) {
+        setBusy(false);
+        return;
+      }
+      const status = String(panel.dataset.forgeStatus || "");
+      setBusy(status === "queued" || status === "running");
+    }
+
+    function triggerGenericForgeRun(seedMode = "random", seedJobId = "") {
+      syncForgeInputs();
+      const seedModeEl = forge.querySelector("#generic_forge_seed_mode");
+      const seedJobEl = forge.querySelector("#generic_forge_seed_job_id");
+      if (seedModeEl) seedModeEl.value = String(seedMode || "random");
+      if (seedJobEl) seedJobEl.value = String(seedJobId || "");
+      const nonce = forge.querySelector("#generic_forge_nonce");
+      if (nonce) nonce.value = String(Date.now());
+      if (host && window.htmx) window.htmx.trigger(host, "strategy-forge-run");
     }
 
     const runBtn = forge.querySelector("#generic_forge_run_btn");
+    const randomBtn = forge.querySelector("#generic_forge_random_btn");
     const host = forge.querySelector("#generic_forge_table");
     if (runBtn) {
-      runBtn.addEventListener("click", () => {
-        syncForgeInputs();
-        const nonce = forge.querySelector("#generic_forge_nonce");
-        if (nonce) nonce.value = String(Date.now());
-        if (host && window.htmx) window.htmx.trigger(host, "strategy-forge-run");
-      });
+      runBtn.addEventListener("click", () => triggerGenericForgeRun("random", ""));
+    }
+    if (randomBtn) {
+      randomBtn.addEventListener("click", () => triggerGenericForgeRun("random", ""));
     }
     if (host) {
+      host.addEventListener("click", (ev) => {
+        const actionBtn = ev.target && ev.target.closest ? ev.target.closest("[data-strategy-forge-action]") : null;
+        if (!actionBtn) return;
+        ev.preventDefault();
+        const action = String(actionBtn.dataset.strategyForgeAction || "");
+        if (action === "continue") {
+          triggerGenericForgeRun("leaderboard", actionBtn.dataset.strategyForgeJobId || "");
+        } else if (action === "random") {
+          triggerGenericForgeRun("random", "");
+        }
+      });
       host.addEventListener("htmx:beforeRequest", () => setBusy(true));
-      host.addEventListener("htmx:afterRequest", () => setBusy(false));
+      host.addEventListener("htmx:afterRequest", syncBusyFromPanel);
+      host.addEventListener("htmx:afterSwap", syncBusyFromPanel);
       host.addEventListener("htmx:responseError", () => setBusy(false));
       host.addEventListener("htmx:sendError", () => setBusy(false));
       host.addEventListener("htmx:timeout", () => setBusy(false));

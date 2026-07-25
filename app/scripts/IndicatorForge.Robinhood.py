@@ -706,11 +706,37 @@ def _log_historical_candles(
         f"premarket_candles={pre_count} after_hours_candles={post_count} "
         f"source=robin_stocks synthetically_modified={bool(synthetically_modified)}"
     )
-    if bool(extended_enabled) and pre_count == 0 and post_count == 0:
+    if (
+        _should_note_missing_extended_candles(
+            timeframe=timeframe,
+            extended_enabled=extended_enabled,
+            requested_bounds=requested_bounds,
+        )
+        and pre_count == 0
+        and post_count == 0
+    ):
         print(
-            f"[{symbol}] EXTENDED_HOURS_CANDLES_NOT_RETURNED "
+            f"[{symbol}] Extended-hours candles not returned; using regular-session candles "
             f"timeframe={timeframe} requested_bounds={requested_bounds} raw_candle_count={len(rows)}"
         )
+
+
+def _should_note_missing_extended_candles(
+    *,
+    timeframe: str,
+    extended_enabled: bool,
+    requested_bounds: str,
+) -> bool:
+    if not bool(extended_enabled):
+        return False
+    requested = str(requested_bounds or "").strip().lower()
+    if requested in ("", "regular", "24_7", "synthetic_from_non_robinhood_closes"):
+        return False
+    cfg = TIMEFRAMES.get(str(timeframe or "").strip().lower()) or {}
+    interval = str(cfg.get("interval") or timeframe or "").strip().lower()
+    if interval in ("day", "week"):
+        return False
+    return True
 
 
 def _order_success(resp: Any) -> bool:

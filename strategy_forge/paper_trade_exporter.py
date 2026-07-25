@@ -18,6 +18,7 @@ def indicatorforge_rules(candidate: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(rule, dict):
                 continue
             kind = str(rule.get("kind") or "").strip().lower()
+            timeframe = str(rule.get("timeframe") or candidate.get("timeframe") or "").strip().lower()
             p = rule.get("params") if isinstance(rule.get("params"), dict) else {}
             if kind == "ma_cross":
                 ma_type = str(p.get("ma_type") or "ema")
@@ -27,6 +28,7 @@ def indicatorforge_rules(candidate: dict[str, Any]) -> list[dict[str, Any]]:
                     {
                         "name": f"{ma_type.upper()}{fast} evolved trend filter",
                         "kind": "ma",
+                        "timeframe": timeframe,
                         "params": {"length": fast, "ma_type": ma_type, "buy_relation": "above", "sell_relation": "below"},
                     }
                 )
@@ -34,6 +36,7 @@ def indicatorforge_rules(candidate: dict[str, Any]) -> list[dict[str, Any]]:
                     {
                         "name": f"{ma_type.upper()}{slow} evolved trend guard",
                         "kind": "ma",
+                        "timeframe": timeframe,
                         "params": {"length": slow, "ma_type": ma_type, "buy_relation": "above", "sell_relation": "below"},
                     }
                 )
@@ -42,6 +45,7 @@ def indicatorforge_rules(candidate: dict[str, Any]) -> list[dict[str, Any]]:
                     {
                         "name": "Evolved RSI momentum",
                         "kind": "rsi",
+                        "timeframe": timeframe,
                         "params": {
                             "length": int(p.get("length") or 14),
                             "oversold": float(p.get("entry_min") or 55),
@@ -58,6 +62,7 @@ def indicatorforge_rules(candidate: dict[str, Any]) -> list[dict[str, Any]]:
                     {
                         "name": "Evolved MACD momentum",
                         "kind": "macd",
+                        "timeframe": timeframe,
                         "params": {
                             "fast_length": int(p.get("fast") or 12),
                             "slow_length": int(p.get("slow") or 26),
@@ -72,6 +77,7 @@ def indicatorforge_rules(candidate: dict[str, Any]) -> list[dict[str, Any]]:
                     {
                         "name": "Evolved Bollinger rule",
                         "kind": "bb",
+                        "timeframe": timeframe,
                         "params": {
                             "length": int(p.get("length") or 20),
                             "std_mult": float(p.get("std_mult") or 2.0),
@@ -79,6 +85,158 @@ def indicatorforge_rules(candidate: dict[str, Any]) -> list[dict[str, Any]]:
                             "sell_condition": "percent_b_above" if pullback else "percent_b_below",
                             "percent_b_buy_threshold": float(p.get("entry_b") or (0.25 if pullback else 0.85)),
                             "percent_b_sell_threshold": float(p.get("exit_b") or (0.65 if pullback else 0.55)),
+                        },
+                    }
+                )
+            elif kind == "donchian_breakout":
+                out.append(
+                    {
+                        "name": "Evolved Donchian breakout",
+                        "kind": "donchian",
+                        "timeframe": timeframe,
+                        "params": {
+                            "lookback": int(p.get("lookback") or 20),
+                            "buy_condition": "high_above_upper" if bool(p.get("use_high_break")) else "close_above_upper",
+                            "sell_condition": "close_below_lower",
+                        },
+                    }
+                )
+            elif kind == "supertrend_trend":
+                out.append(
+                    {
+                        "name": "Evolved Supertrend trend",
+                        "kind": "supertrend",
+                        "timeframe": timeframe,
+                        "params": {
+                            "atr_length": int(p.get("atr_length") or 10),
+                            "multiplier": float(p.get("multiplier") or 3.0),
+                            "buy_condition": "trend_up",
+                            "sell_condition": "trend_down",
+                        },
+                    }
+                )
+            elif kind == "vwap_filter":
+                out.append(
+                    {
+                        "name": "Evolved VWAP filter",
+                        "kind": "vwap",
+                        "timeframe": timeframe,
+                        "params": {
+                            "buy_condition": "within_band",
+                            "sell_condition": "exit_below",
+                            "max_extension_pct": float(p.get("max_extension_pct") or 0.015),
+                            "max_pullback_pct": float(p.get("max_pullback_pct") or 0.01),
+                            "exit_below_pct": float(p.get("exit_below_pct") or 0.012),
+                        },
+                    }
+                )
+            elif kind == "relative_volume":
+                out.append(
+                    {
+                        "name": "Evolved Relative Volume",
+                        "kind": "relative_volume",
+                        "timeframe": timeframe,
+                        "params": {
+                            "length": int(p.get("length") or 20),
+                            "threshold": float(p.get("threshold") or 1.2),
+                            "buy_condition": "above_threshold",
+                            "sell_condition": "below_threshold",
+                        },
+                    }
+                )
+            elif kind == "rsi_derivative":
+                out.append(
+                    {
+                        "name": "Evolved RSI derivative",
+                        "kind": "rsi_d",
+                        "timeframe": timeframe,
+                        "params": {
+                            "buy_above": float(p.get("buy_above") or 0.0),
+                            "sell_below": float(p.get("sell_below") or 0.0),
+                        },
+                    }
+                )
+            elif kind == "roc_momentum":
+                out.append(
+                    {
+                        "name": "Evolved ROC momentum",
+                        "kind": "roc",
+                        "timeframe": timeframe,
+                        "params": {
+                            "length": int(p.get("length") or 12),
+                            "buy_condition": str(p.get("buy_condition") or "momentum_long"),
+                            "sell_condition": str(p.get("sell_condition") or "momentum_short"),
+                            "buy_threshold_pct": float(p.get("buy_threshold_pct") or 0.0),
+                            "sell_threshold_pct": float(p.get("sell_threshold_pct") or 0.0),
+                        },
+                    }
+                )
+            elif kind == "sar_trend":
+                out.append(
+                    {
+                        "name": "Evolved Parabolic SAR",
+                        "kind": "sar",
+                        "timeframe": timeframe,
+                        "params": {
+                            "step": float(p.get("step") or 0.02),
+                            "max_step": float(p.get("max_step") or 0.2),
+                            "buy_condition": str(p.get("buy_condition") or "trend_long"),
+                            "sell_condition": str(p.get("sell_condition") or "trend_short"),
+                        },
+                    }
+                )
+            elif kind == "ichimoku_trend":
+                out.append(
+                    {
+                        "name": "Evolved Ichimoku trend",
+                        "kind": "ichimoku",
+                        "timeframe": timeframe,
+                        "params": {
+                            "conversion_line_length": int(p.get("tenkan") or 9),
+                            "base_line_length": int(p.get("kijun") or 26),
+                            "leading_span_b_length": int(p.get("senkou_b") or 52),
+                            "lagging_line_displacement": 26,
+                            "buy_condition": str(p.get("buy_condition") or "strong_long_confirm"),
+                            "sell_condition": str(p.get("sell_condition") or "strong_short_confirm"),
+                            "block_condition": "hold",
+                            "buy_conditions": [str(p.get("buy_condition") or "strong_long_confirm")],
+                            "sell_conditions": [str(p.get("sell_condition") or "strong_short_confirm")],
+                            "block_conditions": ["hold"],
+                            "buy_match_mode": "all",
+                            "sell_match_mode": "all",
+                            "block_match_mode": "all",
+                            "cloud_thickness_threshold_pct": 1.0,
+                            "base_line_bounce_tolerance_pct": 0.35,
+                            "delayed_cross_lookback": 3,
+                        },
+                    }
+                )
+            elif kind == "ttm_squeeze":
+                out.append(
+                    {
+                        "name": "Evolved TTM Squeeze",
+                        "kind": "ttm",
+                        "timeframe": timeframe,
+                        "params": {
+                            "bb_length": int(p.get("bb_length") or 20),
+                            "bb_mult": float(p.get("bb_mult") or 2.0),
+                            "kc_length": int(p.get("kc_length") or 20),
+                            "kc_mult": float(p.get("kc_mult") or 1.5),
+                            "momentum_length": int(p.get("momentum_length") or 20),
+                            "buy_condition": str(p.get("buy_condition") or "long_release"),
+                            "sell_condition": str(p.get("sell_condition") or "short_release"),
+                        },
+                    }
+                )
+            elif kind == "heikin_ashi_trend":
+                out.append(
+                    {
+                        "name": "Evolved Heikin Ashi trend",
+                        "kind": "heikin_ashi",
+                        "timeframe": timeframe,
+                        "params": {
+                            "mode": str(p.get("mode") or "transition"),
+                            "doji_tolerance_pct": float(p.get("doji_tolerance_pct") or 0.0),
                         },
                     }
                 )
