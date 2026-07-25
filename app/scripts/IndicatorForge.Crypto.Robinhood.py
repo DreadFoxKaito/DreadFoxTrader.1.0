@@ -2863,14 +2863,74 @@ def _normalize_inline_rules(obj: Any) -> List[Dict[str, Any]]:
         if kind not in ("ma", "ema", "rsi", "rsi_d", "macd", "heikin_ashi", "bb", "ichimoku", "ttm", "roc", "sar"):
             continue
         params = item.get("params") if isinstance(item.get("params"), dict) else {}
-        out.append(
-            {
-                "name": str(item.get("name") or kind.upper()),
-                "kind": kind,
-                "params": params,
-            }
-        )
+        rule = {
+            "name": str(item.get("name") or kind.upper()),
+            "kind": kind,
+            "params": params,
+        }
+        tf_raw = item.get("timeframe")
+        if tf_raw in (None, "", "None"):
+            tf_raw = params.get("timeframe") if isinstance(params, dict) else None
+        tf = _normalize_rule_timeframe(tf_raw, default="")
+        if tf:
+            rule["timeframe"] = tf
+        out.append(rule)
     return out
+
+
+def _normalize_rule_timeframe(value: Any, default: str = "1h") -> str:
+    txt = str(value or "").strip().lower()
+    aliases = {
+        "1min": "1m",
+        "1minute": "1m",
+        "5min": "5m",
+        "5minute": "5m",
+        "10min": "10m",
+        "10minute": "10m",
+        "15min": "15m",
+        "15minute": "15m",
+        "30min": "30m",
+        "30minute": "30m",
+        "60m": "1h",
+        "60min": "1h",
+        "1hr": "1h",
+        "1hour": "1h",
+        "hour": "1h",
+        "daily": "1d",
+        "day": "1d",
+    }
+    txt = aliases.get(txt, txt)
+    if txt in TIMEFRAMES:
+        return txt
+    fallback = str(default or "").strip().lower()
+    fallback = aliases.get(fallback, fallback)
+    return fallback if fallback in TIMEFRAMES else ""
+
+
+def _rule_timeframe(rule: Dict[str, Any], default_timeframe: str) -> str:
+    params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
+    tf_raw = rule.get("timeframe")
+    if tf_raw in (None, "", "None"):
+        tf_raw = params.get("timeframe") if isinstance(params, dict) else None
+    return _normalize_rule_timeframe(tf_raw, default=default_timeframe) or default_timeframe
+
+
+def _rules_with_default_timeframe(rules: List[Dict[str, Any]], default_timeframe: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        r = dict(rule)
+        r["timeframe"] = _rule_timeframe(r, default_timeframe)
+        out.append(r)
+    return out
+
+
+def _rules_by_timeframe(rules: List[Dict[str, Any]], default_timeframe: str) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for rule in _rules_with_default_timeframe(rules, default_timeframe):
+        grouped.setdefault(_rule_timeframe(rule, default_timeframe), []).append(rule)
+    return grouped
 
 
 def _resolve_rules(_db_path: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -3780,8 +3840,15 @@ def main_trading_loop(
         raise ValueError(f"Invalid timeframe '{timeframe}'. Choose from {list(TIMEFRAMES.keys())}.")
     interval = TIMEFRAMES[timeframe]["interval"]
     span = TIMEFRAMES[timeframe]["span"]
+    rules = _rules_with_default_timeframe(rules, timeframe)
+    rules_by_tf = _rules_by_timeframe(rules, timeframe)
     rule_min_candles = _rule_min_candles(rules)
+    rule_min_candles_by_tf = {tf: _rule_min_candles(tf_rules) for tf, tf_rules in rules_by_tf.items()}
     _log_info(f"Rule candle requirement: {rule_min_candles}")
+    _log_info(
+        "Rule timeframes: "
+        + ", ".join(f"{tf}({rule_min_candles_by_tf[tf]} candles)" for tf in rules_by_tf)
+    )
 
     while True:
         tickers_status: List[Dict[str, Any]] = []
@@ -3825,40 +3892,63 @@ def main_trading_loop(
         for symbol in symbols:
             try:
                 current_price = get_crypto_price(symbol, _db_path=db_path, _connection_id=connection_id)
-                hist = get_crypto_historicals(symbol, interval, span, _db_path=db_path, _connection_id=connection_id)
+                fetch_timeframes = list(dict.fromkeys([timeframe] + list(rules_by_tf.keys())))
+                hist_by_tf: Dict[str, List[Dict[str, Any]]] = {}
+                ohlc_by_tf: Dict[str, Tuple[List[float], List[float], List[float], List[float]]] = {}
+                missing_tf_reasons: List[str] = []
 
-                opens: List[float] = []
-                highs: List[float] = []
-                lows: List[float] = []
-                closes: List[float] = []
-                for row in hist:
-                    try:
-                        close_val = float(row.get("close_price"))
-                    except Exception:
+                for tf_key in fetch_timeframes:
+                    tf_cfg = TIMEFRAMES[tf_key]
+                    tf_min = int(rule_min_candles_by_tf.get(tf_key, 30 if tf_key == timeframe else rule_min_candles))
+                    hist_tf = get_crypto_historicals(
+                        symbol,
+                        tf_cfg["interval"],
+                        tf_cfg["span"],
+                        _db_path=db_path,
+                        _connection_id=connection_id,
+                    )
+                    tf_opens: List[float] = []
+                    tf_highs: List[float] = []
+                    tf_lows: List[float] = []
+                    tf_closes: List[float] = []
+                    for row in hist_tf:
+                        try:
+                            close_val = float(row.get("close_price"))
+                        except Exception:
+                            continue
+                        prev_close = tf_closes[-1] if tf_closes else close_val
+                        try:
+                            open_val = float(row.get("open_price"))
+                            high_val = float(row.get("high_price"))
+                            low_val = float(row.get("low_price"))
+                        except Exception:
+                            open_val = prev_close
+                            high_val = max(prev_close, close_val)
+                            low_val = min(prev_close, close_val)
+                        tf_opens.append(float(open_val))
+                        tf_highs.append(float(high_val))
+                        tf_lows.append(float(low_val))
+                        tf_closes.append(float(close_val))
+                    if len(tf_closes) < tf_min:
+                        missing_tf_reasons.append(f"{tf_key}: got {len(tf_closes)}, need {tf_min}")
                         continue
-                    prev_close = closes[-1] if closes else close_val
-                    try:
-                        open_val = float(row.get("open_price"))
-                        high_val = float(row.get("high_price"))
-                        low_val = float(row.get("low_price"))
-                    except Exception:
-                        open_val = prev_close
-                        high_val = max(prev_close, close_val)
-                        low_val = min(prev_close, close_val)
-                    opens.append(float(open_val))
-                    highs.append(float(high_val))
-                    lows.append(float(low_val))
-                    closes.append(float(close_val))
-                if len(closes) < rule_min_candles:
-                    _log_warn(f"[{symbol}] Not enough historical candles.")
-                    tickers_status.append({"symbol": symbol, "signal": "NO_DATA"})
+                    prev_close = float(tf_closes[-1])
+                    current_price_f = float(current_price)
+                    tf_opens.append(prev_close)
+                    tf_highs.append(max(prev_close, current_price_f))
+                    tf_lows.append(min(prev_close, current_price_f))
+                    tf_closes.append(current_price_f)
+                    hist_by_tf[tf_key] = hist_tf
+                    ohlc_by_tf[tf_key] = (tf_opens, tf_highs, tf_lows, tf_closes)
+
+                if missing_tf_reasons:
+                    _log_warn(f"[{symbol}] Not enough historical candles by timeframe: {'; '.join(missing_tf_reasons)}.")
+                    tickers_status.append({"symbol": symbol, "signal": "NO_DATA", "timeframes": list(rules_by_tf.keys())})
                     continue
-                prev_close = float(closes[-1])
-                current_price_f = float(current_price)
-                opens.append(prev_close)
-                highs.append(max(prev_close, current_price_f))
-                lows.append(min(prev_close, current_price_f))
-                closes.append(current_price_f)
+
+                default_ohlc = ohlc_by_tf.get(timeframe) or next(iter(ohlc_by_tf.values()))
+                opens, highs, lows, closes = default_ohlc
+                hist = hist_by_tf.get(timeframe) or next(iter(hist_by_tf.values()))
 
                 pos_info = positions_map.get(symbol, {})
                 pos_qty = _safe_float(pos_info.get("quantity"))
@@ -3931,13 +4021,15 @@ def main_trading_loop(
 
                 checks: List[Dict[str, Any]] = []
                 for r in rules:
+                    rule_tf = _rule_timeframe(r, timeframe)
+                    rule_opens, rule_highs, rule_lows, rule_closes = ohlc_by_tf.get(rule_tf, default_ohlc)
                     c = _eval_rule(
                         r,
-                        closes,
-                        float(current_price),
-                        opens=opens,
-                        highs=highs,
-                        lows=lows,
+                        rule_closes,
+                        float(rule_closes[-1]) if rule_closes else float(current_price),
+                        opens=rule_opens,
+                        highs=rule_highs,
+                        lows=rule_lows,
                     )
                     rule_params = r.get("params") if isinstance(r.get("params"), dict) else {}
                     base_name = str(c.get("name") or r.get("name") or str(r.get("kind") or "").upper())
@@ -3953,12 +4045,14 @@ def main_trading_loop(
                             child["_rule_params"] = rule_params
                             if not str(child.get("_rule_id") or "").strip():
                                 child["_rule_id"] = _ma_ribbon_level_rule_id(base_rule_id, child.get("_ribbon_slot"))
+                            child["_timeframe"] = rule_tf
                             checks.append(child)
                         continue
                     c["name"] = base_name
                     c["_rule_kind"] = base_kind
                     c["_rule_params"] = rule_params
                     c["_rule_id"] = base_rule_id
+                    c["_timeframe"] = rule_tf
                     checks.append(c)
                 rule_consensus_signal = _strict_consensus_signal(checks)
                 if rule_consensus_signal == "BUY":
@@ -4273,11 +4367,22 @@ def main_trading_loop(
                         "stoploss_trigger_gap_pct": stop_trigger_gap_pct,
                         "local_trails": _trail_snapshot(symbol),
                         "chart": _build_chart_series(closes) if status_writer is not None else {},
+                        "charts_by_timeframe": (
+                            {
+                                tf_key: _build_chart_series(tf_ohlc[3])
+                                for tf_key, tf_ohlc in ohlc_by_tf.items()
+                                if tf_key in rules_by_tf
+                            }
+                            if status_writer is not None
+                            else {}
+                        ),
+                        "timeframes": list(rules_by_tf.keys()),
                         "rule_summary": [
                             {
                                 "name": str(c.get("name") or ""),
                                 "kind": str(c.get("_rule_kind") or ""),
                                 "rule_id": str(c.get("_rule_id") or ""),
+                                "timeframe": str(c.get("_timeframe") or timeframe),
                                 "buy_ok": bool(c.get("buy_ok")),
                                 "sell_ok": bool(c.get("sell_ok")),
                                 "buy_ignored": bool(c.get("buy_ignored")),

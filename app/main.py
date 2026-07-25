@@ -3476,6 +3476,7 @@ def _list_indicator_rules(*, enabled_only: bool = False) -> list[dict[str, Any]]
                 "id": int(r["id"]),
                 "name": str(r["name"] or ""),
                 "kind": str(r["kind"] or ""),
+                "timeframe": _rule_timeframe({"params": _safe_json(str(r["params_json"] or "{}"), default={})}, ""),
                 "enabled": bool(int(r["enabled"] or 0)),
                 "params": _safe_json(str(r["params_json"] or "{}"), default={}),
             }
@@ -3522,17 +3523,19 @@ def _saved_indicator_rule_target_entries(rules: Optional[list[dict[str, Any]]] =
         name = str(entry.get("name") or "Rule").strip() or "Rule"
         kind = str(entry.get("kind") or "").strip().lower()
         display_kind = str(entry.get("display_kind") or kind.upper() or "RULE").strip() or "RULE"
+        timeframe = _rule_timeframe(entry.get("rule") if isinstance(entry.get("rule"), dict) else {}, "")
+        tf_label = f" [{timeframe}]" if timeframe else ""
         out.append(
             {
                 "id": rid,
-                "label": f"#{idx} {display_kind} - {name}",
+                "label": f"#{idx} {display_kind}{tf_label} - {name}",
                 "kind": kind,
             }
         )
     return out
 
 
-def _add_indicator_rule(name: str, kind: str, params: dict[str, Any]) -> None:
+def _add_indicator_rule(name: str, kind: str, params: dict[str, Any], *, timeframe: str = "") -> None:
     nm = str(name or "").strip() or kind.upper()
     kd = str(kind or "").strip().lower()
     pr = dict(params or {}) if isinstance(params, dict) else {}
@@ -3550,6 +3553,9 @@ def _add_indicator_rule(name: str, kind: str, params: dict[str, Any]) -> None:
         return
     if not str(pr.get("rule_id") or "").strip():
         pr["rule_id"] = _new_indicator_rule_id()
+    tf = _normalize_indicator_rule_timeframe(timeframe or pr.get("timeframe"), default="")
+    if tf:
+        pr["timeframe"] = tf
     conn = db()
     cur = conn.cursor()
     cur.execute(
@@ -3618,13 +3624,78 @@ def _default_indicator_rules_if_empty() -> None:
 def _markets_timeframe(interval_key: str) -> tuple[str, str]:
     tf = str(interval_key or "1h").strip().lower()
     mapping = {
+        "1m": ("1minute", "day"),
         "5m": ("5minute", "week"),
         "10m": ("10minute", "week"),
+        "15m": ("15minute", "week"),
         "30m": ("30minute", "month"),
         "1h": ("hour", "3month"),
         "1d": ("day", "year"),
     }
     return mapping.get(tf, ("hour", "3month"))
+
+
+_INDICATOR_RULE_TIMEFRAMES: tuple[str, ...] = ("1m", "5m", "10m", "15m", "30m", "1h", "1d")
+
+
+def _normalize_indicator_rule_timeframe(value: Any, *, default: str = "1h") -> str:
+    txt = str(value or "").strip().lower()
+    aliases = {
+        "1min": "1m",
+        "1minute": "1m",
+        "5min": "5m",
+        "5minute": "5m",
+        "10min": "10m",
+        "10minute": "10m",
+        "15min": "15m",
+        "15minute": "15m",
+        "30min": "30m",
+        "30minute": "30m",
+        "60m": "1h",
+        "60min": "1h",
+        "1hr": "1h",
+        "1hour": "1h",
+        "hour": "1h",
+        "daily": "1d",
+        "day": "1d",
+    }
+    txt = aliases.get(txt, txt)
+    if txt in _INDICATOR_RULE_TIMEFRAMES:
+        return txt
+    fallback = str(default or "").strip().lower()
+    fallback = aliases.get(fallback, fallback)
+    if fallback in _INDICATOR_RULE_TIMEFRAMES:
+        return fallback
+    return "" if default in (None, "") else "1h"
+
+
+def _rule_timeframe(rule: dict[str, Any], default_timeframe: str = "1h") -> str:
+    params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
+    explicit = rule.get("timeframe")
+    if explicit in (None, "", "None"):
+        explicit = params.get("timeframe")
+    if explicit in (None, "", "None"):
+        explicit = params.get("rule_timeframe")
+    return _normalize_indicator_rule_timeframe(explicit, default=default_timeframe)
+
+
+def _rules_with_default_timeframe(rules: list[dict[str, Any]], default_timeframe: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        r = dict(rule)
+        r["timeframe"] = _rule_timeframe(r, default_timeframe)
+        out.append(r)
+    return out
+
+
+def _rules_by_timeframe(rules: list[dict[str, Any]], default_timeframe: str) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for rule in _rules_with_default_timeframe(rules, default_timeframe):
+        tf = _rule_timeframe(rule, default_timeframe)
+        grouped.setdefault(tf, []).append(rule)
+    return grouped
 
 
 def _normalize_market_source_hint(broker_hint: str) -> str:
@@ -3659,15 +3730,19 @@ _MARKETS_SPAN_DAYS = {
     "5year": 1825,
 }
 _MARKETS_BARS_PER_DAY_STOCK = {
+    "1minute": 390,
     "5minute": 78,
     "10minute": 39,
+    "15minute": 26,
     "30minute": 13,
     "hour": 7,
     "day": 1,
 }
 _MARKETS_BARS_PER_DAY_CRYPTO = {
+    "1minute": 1440,
     "5minute": 288,
     "10minute": 144,
+    "15minute": 96,
     "30minute": 48,
     "hour": 24,
     "day": 1,
@@ -3675,14 +3750,20 @@ _MARKETS_BARS_PER_DAY_CRYPTO = {
 INDICATORFORGE_BACKTEST_DEFAULT_CANDLES = 1000
 INDICATORFORGE_BACKTEST_MAX_CANDLES = 5000
 _MARKETS_ALLOWED_STOCK_SPANS = {
+    "1minute": ("day", "week"),
     "5minute": ("day", "week"),
     "10minute": ("day", "week"),
+    "15minute": ("day", "week"),
+    "30minute": ("day", "week", "month"),
     "hour": ("day", "week", "month", "3month"),
     "day": ("year", "5year"),
 }
 _MARKETS_ALLOWED_CRYPTO_SPANS = {
+    "1minute": ("day", "week", "month", "3month"),
     "5minute": ("day", "week", "month", "3month"),
     "10minute": ("day", "week", "month", "3month"),
+    "15minute": ("day", "week", "month", "3month"),
+    "30minute": ("day", "week", "month", "3month"),
     "hour": ("day", "week", "month", "3month"),
     "day": ("year", "5year"),
 }
@@ -3690,8 +3771,11 @@ _MARKETS_ALLOWED_CRYPTO_SPANS = {
 _ROBINHOOD_STOCK_BACKTEST_CAPACITY = {
     # robin_stocks stock intraday spans are short. Keep requests inside what
     # the wrapper can plausibly return instead of running misleading partial sims.
+    "1m": 390,
     "5m": 390,
     "10m": 195,
+    "15m": 390,
+    "30m": 390,
     "1h": 384,
     "1d": 1260,
 }
@@ -5375,6 +5459,7 @@ def _indicator_runtime_rule_entries(rules: list[dict[str, Any]]) -> list[dict[st
         kind = str(rule.get("kind") or "").strip().lower()
         name = _rule_name(rule)
         rid = str(params.get("rule_id") or "").strip()
+        timeframe = _rule_timeframe(rule, "")
         if kind in ("ma", "ema") and _normalize_ma_mode(params.get("mode"), default="single") == "ribbon":
             for level in _ma_ribbon_levels_from_params(params):
                 slot = str(level.get("slot") or "").strip().lower()
@@ -5394,6 +5479,7 @@ def _indicator_runtime_rule_entries(rules: list[dict[str, Any]]) -> list[dict[st
                         "name": _ma_ribbon_level_name(name, level),
                         "display_kind": "RIBBON LEVEL",
                         "kind": kind,
+                        "timeframe": timeframe,
                         "rule": rule,
                         "rule_id": child_id,
                         "ribbon_slot": slot,
@@ -5408,6 +5494,7 @@ def _indicator_runtime_rule_entries(rules: list[dict[str, Any]]) -> list[dict[st
                 "name": name,
                 "display_kind": (kind.upper() or "RULE"),
                 "kind": kind,
+                "timeframe": timeframe,
                 "rule": rule,
                 "rule_id": rid,
                 "ribbon_slot": "",
@@ -6107,13 +6194,15 @@ def _render_indicator_rule_summary_panel(
     out: list[str] = [
         f"<div class='small' style='margin-top:8px'>{html.escape(title)}</div>",
         "<div class='status-table-wrap'><table>",
-        "<thead><tr><th>#</th><th>Rule</th><th>Summary</th></tr></thead><tbody>",
+        "<thead><tr><th>#</th><th>Rule</th><th>TF</th><th>Summary</th></tr></thead><tbody>",
     ]
     for idx, rule in enumerate(rules, start=1):
         name = _rule_name(rule)
         kind = str(rule.get("kind") or "").strip().upper() or "RULE"
         params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
         rid = str(params.get("rule_id") or "").strip()
+        timeframe = _rule_timeframe(rule, "")
+        tf_html = f"<span class='badge'>TF {html.escape(timeframe)}</span>" if timeframe else ""
         color = _rule_line_color(rule)
         dot = (
             "<span style='display:inline-block;width:8px;height:8px;border-radius:999px;"
@@ -6126,6 +6215,7 @@ def _render_indicator_rule_summary_panel(
             "<tr>"
             f"<td>{idx}</td>"
             f"<td>{dot}<b>{html.escape(name)}</b><div class='small'>{html.escape(kind)}</div>{rid_html}</td>"
+            f"<td>{tf_html}</td>"
             f"<td class='small'>{summary_html}</td>"
             "</tr>"
         )
@@ -6148,6 +6238,7 @@ def _render_indicator_rule_summary_panel(
                     "<tr>"
                     f"<td>{idx}.{html.escape(str(level.get('label') or 'L')[0].upper())}</td>"
                     f"<td>{dot}<b>{html.escape(child_name)}</b><div class='small'>RIBBON LEVEL</div>{child_id_html}</td>"
+                    f"<td>{tf_html}</td>"
                     f"<td class='small'>{html.escape(child_summary)}</td>"
                     "</tr>"
                 )
@@ -8083,6 +8174,56 @@ def _build_indicator_rule_checks(
     return checks
 
 
+def _build_indicator_rule_checks_by_timeframe(
+    rules: list[dict[str, Any]],
+    ohlc_by_timeframe: dict[str, tuple[list[float], list[float], list[float], list[float]]],
+    *,
+    default_timeframe: str,
+    apply_overrides: bool = True,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        tf = _rule_timeframe(rule, default_timeframe)
+        ohlc = ohlc_by_timeframe.get(tf)
+        if ohlc is None:
+            check = {
+                "buy_ok": False,
+                "sell_ok": False,
+                "buy_ignored": False,
+                "sell_ignored": False,
+                "value": "—",
+                "detail": f"{tf} data unavailable",
+            }
+            params = rule.get("params") if isinstance(rule.get("params"), dict) else {}
+            check["name"] = _rule_name(rule)
+            check["_rule_kind"] = str(rule.get("kind") or "").strip().lower()
+            check["_rule_params"] = params
+            check["_rule_id"] = str(params.get("rule_id") or "").strip()
+            check["_timeframe"] = tf
+            checks.append(check)
+            continue
+        opens, highs, lows, closes = ohlc
+        if len(closes) < 2:
+            continue
+        item_checks = _build_indicator_rule_checks(
+            [rule],
+            closes,
+            float(closes[-1]),
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            apply_overrides=False,
+        )
+        for item in item_checks:
+            item["_timeframe"] = tf
+            checks.append(item)
+    if apply_overrides:
+        _apply_indicator_signal_overrides(checks)
+    return checks
+
+
 def _indicator_override_meta_from_detail(detail: Any) -> Optional[dict[str, str]]:
     detail_txt = str(detail or "")
     if not detail_txt:
@@ -8967,7 +9108,7 @@ def _render_markets_indicators_html(
     return "".join(rows)
 
 
-def _normalize_indicator_rules_payload(raw: Any) -> list[dict[str, Any]]:
+def _normalize_indicator_rules_payload(raw: Any, *, default_timeframe: str = "") -> list[dict[str, Any]]:
     obj: Any = raw
     if isinstance(obj, str):
         try:
@@ -8998,13 +9139,17 @@ def _normalize_indicator_rules_payload(raw: Any) -> list[dict[str, Any]]:
         if kind not in ("ma", "ema", "rsi", "rsi_d", "macd", "heikin_ashi", "bb", "ichimoku", "ttm", "roc", "sar"):
             continue
         params = item.get("params") if isinstance(item.get("params"), dict) else {}
-        out.append(
-            {
-                "name": str(item.get("name") or "").strip() or kind.upper(),
-                "kind": kind,
-                "params": params,
-            }
-        )
+        rule: dict[str, Any] = {
+            "name": str(item.get("name") or "").strip() or kind.upper(),
+            "kind": kind,
+            "params": params,
+        }
+        tf_raw = item.get("timeframe")
+        if tf_raw in (None, "", "None"):
+            tf_raw = params.get("timeframe") if isinstance(params, dict) else None
+        if tf_raw not in (None, "", "None") or default_timeframe:
+            rule["timeframe"] = _normalize_indicator_rule_timeframe(tf_raw, default=default_timeframe or "1h")
+        out.append(rule)
     return out
 
 
@@ -9171,9 +9316,11 @@ def _render_indicatorforge_preview_html(
     entangled_primary_symbol: str = "",
     entangled_inverse_symbol: str = "",
 ) -> str:
-    rules = _normalize_indicator_rules_payload(rules_json)
+    rules = _normalize_indicator_rules_payload(rules_json, default_timeframe=timeframe)
     if not rules:
         return "<div class='small'>No valid indicator rules yet. Add at least one rule.</div>"
+    rules = _rules_with_default_timeframe(rules, timeframe)
+    rules_by_tf = _rules_by_timeframe(rules, timeframe)
 
     primary_symbol = _clean_symbol(entangled_primary_symbol)
     inverse_symbol = _clean_symbol(entangled_inverse_symbol)
@@ -9205,41 +9352,30 @@ def _render_indicatorforge_preview_html(
         if not ok:
             return f"<div class='small'>Indicator preview unavailable: {html.escape(msg)}</div>"
 
-    chart_cfg = _indicator_rules_chart_config(rules)
-    ma_lengths = chart_cfg["ma_lengths"]
-    ema_lengths = chart_cfg["ema_lengths"]
-    macd_configs = chart_cfg["macd_configs"]
-    d_ma_lengths = chart_cfg["d_ma_lengths"]
-    d_ema_lengths = chart_cfg["d_ema_lengths"]
-    bb_configs = chart_cfg["bb_configs"]
-    ttm_configs = chart_cfg["ttm_configs"]
-    roc_lengths = chart_cfg["roc_lengths"]
-    sar_configs = chart_cfg["sar_configs"]
-    ichimoku_configs = chart_cfg["ichimoku_configs"]
-    has_rsi = bool(chart_cfg["has_rsi"])
-    has_drsi = bool(chart_cfg["has_drsi"])
-    has_heikin_ashi = bool(chart_cfg["has_heikin_ashi"])
-    min_required = int(chart_cfg["min_required"])
     tf_key = str(timeframe or "").strip().lower()
-    preview_eval_target = min_required
-    if source_hint == "schwab":
-        if tf_key == "1h":
-            # 1h Schwab uses 15m synthesis; keep rule eval threshold at min_required,
-            # but fetch extra bars so long overlays (ex: MA190) render meaningfully.
-            preview_candle_target = max(min_required + 80, min_required)
+    chart_cfg_by_tf = {tf: _indicator_rules_chart_config(tf_rules) for tf, tf_rules in rules_by_tf.items()}
+    preview_eval_target_by_tf = {tf: int(cfg["min_required"]) for tf, cfg in chart_cfg_by_tf.items()}
+    preview_candle_target_by_tf: dict[str, int] = {}
+    for tf, cfg in chart_cfg_by_tf.items():
+        min_required = int(cfg["min_required"])
+        if source_hint == "schwab":
+            if str(tf or "").strip().lower() == "1h":
+                preview_candle_target_by_tf[tf] = max(min_required + 80, min_required)
+            else:
+                preview_candle_target_by_tf[tf] = max(min_required, 600)
         else:
-            preview_candle_target = max(min_required, 600)
-    else:
-        preview_candle_target = min_required
+            preview_candle_target_by_tf[tf] = min_required
     summary_html = _render_indicator_rule_summary_panel(rules, title="Configured Indicator Rules")
     rule_columns = _indicator_runtime_rule_entries(rules)
 
     headers = ["<th>Symbol</th>", "<th>Signal</th>", "<th>Price</th>"]
     for entry in rule_columns:
         kind_txt = str(entry.get("display_kind") or "").strip().upper()
-        kind_html = f"<div class='small'>{html.escape(kind_txt)}</div>" if kind_txt else ""
+        tf_txt = _rule_timeframe(entry.get("rule") if isinstance(entry.get("rule"), dict) else {}, timeframe)
+        kind_detail = " · ".join([part for part in (kind_txt, f"TF {tf_txt}" if tf_txt else "") if part])
+        kind_html = f"<div class='small'>{html.escape(kind_detail)}</div>" if kind_detail else ""
         headers.append(f"<th>{html.escape(str(entry.get('name') or 'RULE'))}{kind_html}</th>")
-    headers.append("<th>Chart</th>")
+    headers.append("<th>Charts</th>")
 
     rows: list[str] = [
         "<div class='status-table-wrap'><table>",
@@ -9298,6 +9434,7 @@ def _render_indicatorforge_preview_html(
         highs: list[float],
         lows: list[float],
         closes: list[float],
+        ohlc_by_tf: dict[str, tuple[list[float], list[float], list[float], list[float]]],
         checks: list[dict[str, Any]],
         signal: str,
         buy_votes: int,
@@ -9308,28 +9445,44 @@ def _render_indicatorforge_preview_html(
     ) -> None:
         price = float(closes[-1])
         cls = _signal_class(signal)
-        chart_kwargs: dict[str, Any] = {
-            "closes": closes,
-            "opens": opens,
-            "highs": highs,
-            "lows": lows,
-            "ma_lengths": ma_lengths,
-            "ema_lengths": ema_lengths,
-            "macd_configs": macd_configs,
-            "bb_configs": bb_configs,
-            "ttm_configs": ttm_configs,
-            "roc_lengths": roc_lengths,
-            "sar_configs": sar_configs,
-            "heikin_ashi_mode": has_heikin_ashi,
-            "required_points": preview_candle_target,
-            "show_price": True,
-            "show_rsi": has_rsi,
-            "show_drsi": has_drsi,
-            "d_ma_lengths": d_ma_lengths,
-            "d_ema_lengths": d_ema_lengths,
-            "ichimoku_configs": ichimoku_configs,
-        }
-        chart = _market_chart_svg(**chart_kwargs)
+        chart_parts: list[str] = []
+        for tf, tf_rules in rules_by_tf.items():
+            ohlc = ohlc_by_tf.get(tf)
+            if ohlc is None:
+                continue
+            tf_opens, tf_highs, tf_lows, tf_closes = ohlc
+            cfg = chart_cfg_by_tf.get(tf) or _indicator_rules_chart_config(tf_rules)
+            chart = _market_chart_svg(
+                closes=tf_closes,
+                opens=tf_opens,
+                highs=tf_highs,
+                lows=tf_lows,
+                ma_lengths=cfg["ma_lengths"],
+                ema_lengths=cfg["ema_lengths"],
+                macd_configs=cfg["macd_configs"],
+                bb_configs=cfg["bb_configs"],
+                ttm_configs=cfg["ttm_configs"],
+                roc_lengths=cfg["roc_lengths"],
+                sar_configs=cfg["sar_configs"],
+                heikin_ashi_mode=bool(cfg["has_heikin_ashi"]),
+                required_points=int(preview_candle_target_by_tf.get(tf, cfg["min_required"])),
+                show_price=True,
+                show_rsi=bool(cfg["has_rsi"]),
+                show_drsi=bool(cfg["has_drsi"]),
+                d_ma_lengths=cfg["d_ma_lengths"],
+                d_ema_lengths=cfg["d_ema_lengths"],
+                ichimoku_configs=cfg["ichimoku_configs"],
+                display_width=420,
+                display_height=180,
+                show_price_markers=True,
+            )
+            chart_parts.append(
+                "<div class='indicatorforge-tf-chart'>"
+                f"<div class='small'><b>TF {html.escape(tf)}</b></div>"
+                f"{chart}"
+                "</div>"
+            )
+        chart = "<div class='indicatorforge-chart-row'>" + "".join(chart_parts) + "</div>" if chart_parts else "<span class='small'>—</span>"
         note_css = str(signal_note_class or "").strip()
         if signal_note:
             if note_css:
@@ -9364,12 +9517,13 @@ def _render_indicatorforge_preview_html(
         cells.append(f"<td>{chart}</td>")
         rows.append("<tr>" + "".join(cells) + "</tr>")
 
-    def _fetch_ohlc_for_preview(sym: str) -> tuple[list[float], list[float], list[float], list[float], int]:
+    def _fetch_ohlc_for_preview(sym: str, tf: str) -> tuple[list[float], list[float], list[float], list[float], int]:
+        candle_target = int(preview_candle_target_by_tf.get(tf, 30))
         raw_opens, raw_highs, raw_lows, raw_closes, raw_rows, requested_bounds = _market_fetch_ohlc(
             sym,
-            timeframe,
+            tf,
             broker_hint=source_hint,
-            min_candles=preview_candle_target,
+            min_candles=candle_target,
             include_extended=include_history_extended,
         )
         policy = apply_final_candle_policy(
@@ -9410,7 +9564,7 @@ def _render_indicatorforge_preview_html(
                     preview_closes[-1] = q
         _market_log_historical_candles(
             symbol=sym,
-            timeframe=timeframe,
+            timeframe=tf,
             extended_enabled=include_history_extended,
             requested_bounds=requested_bounds,
             raw_rows=raw_rows,
@@ -9434,7 +9588,7 @@ def _render_indicatorforge_preview_html(
         log_indicator_policy(
             mode="PREVIEW",
             symbol=sym,
-            timeframe=timeframe,
+            timeframe=tf,
             session="preview",
             extended_hours=include_history_extended,
             use_current_candle=use_current,
@@ -9449,30 +9603,33 @@ def _render_indicatorforge_preview_html(
 
     if entangled_enabled:
         pair_label = f"{primary_symbol} (inverse {inverse_symbol})"
-        primary_opens, primary_highs, primary_lows, primary_closes, primary_historical_count = _fetch_ohlc_for_preview(primary_symbol)
-        primary_available_count = primary_historical_count if source_hint == "robinhood_crypto" else len(primary_closes)
-        if primary_available_count < preview_eval_target:
-            need_txt = (
-                f"{preview_eval_target} (rule minimum {min_required})"
-                if preview_eval_target != min_required
-                else str(min_required)
-            )
+        primary_ohlc_by_tf: dict[str, tuple[list[float], list[float], list[float], list[float]]] = {}
+        primary_shortages: list[str] = []
+        for tf in rules_by_tf:
+            primary_opens, primary_highs, primary_lows, primary_closes, primary_historical_count = _fetch_ohlc_for_preview(primary_symbol, tf)
+            primary_available_count = primary_historical_count if source_hint == "robinhood_crypto" else len(primary_closes)
+            preview_eval_target = int(preview_eval_target_by_tf.get(tf, 30))
+            if primary_available_count < preview_eval_target:
+                primary_shortages.append(f"{tf} need {preview_eval_target}, got {primary_available_count}")
+                continue
+            primary_ohlc_by_tf[tf] = (primary_opens, primary_highs, primary_lows, primary_closes)
+        if primary_shortages:
             _render_no_data_row(
                 pair_label,
                 reason=(
                     f"insufficient candles for primary {primary_symbol} "
-                    f"(need {need_txt}, got {primary_available_count}); inverse action unavailable"
+                    f"({'; '.join(primary_shortages)}); inverse action unavailable"
                 ),
             )
         else:
-            primary_price = float(primary_closes[-1])
-            primary_eval_kwargs = {
-                "opens": primary_opens,
-                "highs": primary_highs,
-                "lows": primary_lows,
-                "apply_overrides": source_hint != "robinhood_crypto",
-            }
-            primary_checks = _build_indicator_rule_checks(rules, primary_closes, primary_price, **primary_eval_kwargs)
+            primary_tf = tf_key if tf_key in primary_ohlc_by_tf else next(iter(primary_ohlc_by_tf.keys()))
+            primary_opens, primary_highs, primary_lows, primary_closes = primary_ohlc_by_tf[primary_tf]
+            primary_checks = _build_indicator_rule_checks_by_timeframe(
+                rules,
+                primary_ohlc_by_tf,
+                default_timeframe=timeframe,
+                apply_overrides=source_hint != "robinhood_crypto",
+            )
             primary_signal, primary_buy_votes, primary_sell_votes, primary_total = _signal_from_checks(primary_checks)
             if primary_signal == "BUY":
                 inverse_signal = "SELL"
@@ -9486,6 +9643,7 @@ def _render_indicatorforge_preview_html(
                 highs=primary_highs,
                 lows=primary_lows,
                 closes=primary_closes,
+                ohlc_by_tf=primary_ohlc_by_tf,
                 checks=primary_checks,
                 signal=primary_signal,
                 buy_votes=primary_buy_votes,
@@ -9496,28 +9654,31 @@ def _render_indicatorforge_preview_html(
             )
     else:
         for sym in syms:
-            opens, highs, lows, closes, historical_count = _fetch_ohlc_for_preview(sym)
-            available_count = historical_count if source_hint == "robinhood_crypto" else len(closes)
-            if available_count < preview_eval_target:
-                need_txt = (
-                    f"{preview_eval_target} (rule minimum {min_required})"
-                    if preview_eval_target != min_required
-                    else str(min_required)
-                )
+            ohlc_by_tf: dict[str, tuple[list[float], list[float], list[float], list[float]]] = {}
+            shortages: list[str] = []
+            for tf in rules_by_tf:
+                opens, highs, lows, closes, historical_count = _fetch_ohlc_for_preview(sym, tf)
+                available_count = historical_count if source_hint == "robinhood_crypto" else len(closes)
+                preview_eval_target = int(preview_eval_target_by_tf.get(tf, 30))
+                if available_count < preview_eval_target:
+                    shortages.append(f"{tf} need {preview_eval_target}, got {available_count}")
+                    continue
+                ohlc_by_tf[tf] = (opens, highs, lows, closes)
+            if shortages:
                 _render_no_data_row(
                     sym,
-                    reason=f"insufficient candles (need {need_txt}, got {available_count})",
+                    reason=f"insufficient candles ({'; '.join(shortages)})",
                 )
                 continue
 
-            price = float(closes[-1])
-            eval_kwargs = {
-                "opens": opens,
-                "highs": highs,
-                "lows": lows,
-                "apply_overrides": source_hint != "robinhood_crypto",
-            }
-            checks = _build_indicator_rule_checks(rules, closes, price, **eval_kwargs)
+            primary_tf = tf_key if tf_key in ohlc_by_tf else next(iter(ohlc_by_tf.keys()))
+            opens, highs, lows, closes = ohlc_by_tf[primary_tf]
+            checks = _build_indicator_rule_checks_by_timeframe(
+                rules,
+                ohlc_by_tf,
+                default_timeframe=timeframe,
+                apply_overrides=source_hint != "robinhood_crypto",
+            )
             signal, buy_votes, sell_votes, total_rules = _signal_from_checks(checks)
             _render_signal_row(
                 sym=sym,
@@ -9525,6 +9686,7 @@ def _render_indicatorforge_preview_html(
                 highs=highs,
                 lows=lows,
                 closes=closes,
+                ohlc_by_tf=ohlc_by_tf,
                 checks=checks,
                 signal=signal,
                 buy_votes=buy_votes,
@@ -9534,8 +9696,9 @@ def _render_indicatorforge_preview_html(
 
     rows.append("</tbody></table></div>")
     src_label = _market_source_label(source_hint, include_extended=include_history_extended)
+    tf_list = ", ".join(rules_by_tf.keys()) or str(timeframe)
     rows.append(
-        f"<div class='small' style='margin-top:6px;'>Source: {html.escape(src_label)} · timeframe {html.escape(str(timeframe))}</div>"
+        f"<div class='small' style='margin-top:6px;'>Source: {html.escape(src_label)} · timeframes {html.escape(tf_list)}</div>"
     )
     return summary_html + "".join(rows)
 
@@ -9817,9 +9980,11 @@ def _render_indicatorforge_backtest_html(
     stop_loss_pct: Optional[float] = None,
     include_held_end_column: bool = False,
 ) -> str:
-    rules = _normalize_indicator_rules_payload(rules_json)
+    rules = _normalize_indicator_rules_payload(rules_json, default_timeframe=timeframe)
     if not rules:
         return "<div class='small'>No valid indicator rules yet. Add at least one rule.</div>"
+    rules = _rules_with_default_timeframe(rules, timeframe)
+    rules_by_tf = _rules_by_timeframe(rules, timeframe)
 
     source_hint = _normalize_market_source_hint(broker_hint)
     include_history_extended = (
@@ -9843,11 +10008,19 @@ def _render_indicatorforge_backtest_html(
     requested_lookback = max(40, min(int(backtest_candles or INDICATORFORGE_BACKTEST_DEFAULT_CANDLES), INDICATORFORGE_BACKTEST_MAX_CANDLES))
     lookback = requested_lookback
     tf_key = str(timeframe or "").strip().lower()
-    chart_cfg = _indicator_rules_chart_config(rules)
-    min_required = int(chart_cfg.get("min_required") or 30)
+    chart_cfg_by_tf = {tf: _indicator_rules_chart_config(tf_rules) for tf, tf_rules in rules_by_tf.items()}
+    min_required_by_tf = {
+        tf: int(cfg.get("min_required") or 30) for tf, cfg in chart_cfg_by_tf.items()
+    }
+    min_required = max(min_required_by_tf.values()) if min_required_by_tf else 30
     lookback_note: Optional[str] = None
     if source_hint == "robinhood":
-        adjusted_lookback, adjust_note = _robinhood_effective_backtest_lookback(tf_key, requested_lookback, min_required)
+        execution_min_required = int(min_required_by_tf.get(tf_key, min_required))
+        adjusted_lookback, adjust_note = _robinhood_effective_backtest_lookback(
+            tf_key,
+            requested_lookback,
+            execution_min_required,
+        )
         lookback = int(adjusted_lookback)
         lookback_note = adjust_note
 
@@ -9868,9 +10041,13 @@ def _render_indicatorforge_backtest_html(
     if lookback <= 0:
         return f"<div class='small'>Backtest unavailable: {html.escape(lookback_note or 'insufficient Robinhood historical candle capacity')}</div>"
 
-    fetch_target = int(min_required + lookback + 3)
-    if source_hint == "schwab" and tf_key == "1h":
-        fetch_target += 80
+    fetch_target_by_tf: dict[str, int] = {}
+    for tf, tf_min_required in min_required_by_tf.items():
+        target = int(tf_min_required + lookback + 3)
+        if source_hint == "schwab" and str(tf or "").strip().lower() == "1h":
+            target += 80
+        fetch_target_by_tf[tf] = target
+    fetch_target = int(fetch_target_by_tf.get(tf_key) or max(fetch_target_by_tf.values() or [min_required + lookback + 3]))
 
     held_end_header = "<th>Held End</th>" if include_held_end_column else ""
     rows: list[str] = [
@@ -10042,35 +10219,118 @@ def _render_indicatorforge_backtest_html(
             "</tr>"
         )
 
-    def _simulate_rule_series(closes: list[float]) -> dict[str, Any]:
-        if len(closes) < fetch_target:
+    def _clean_backtest_closes(raw: Any) -> list[float]:
+        out: list[float] = []
+        if not isinstance(raw, list):
+            return out
+        for v in raw:
+            fv = _to_float_opt(v)
+            if fv is None or not math.isfinite(float(fv)) or float(fv) <= 0.0:
+                continue
+            out.append(float(fv))
+        return out
+
+    def _fetch_backtest_closes_by_timeframe(sym: str, timeframe_keys: list[str]) -> dict[str, list[float]]:
+        out: dict[str, list[float]] = {}
+        for tf in timeframe_keys:
+            closes = _market_fetch_closes(
+                sym,
+                tf,
+                broker_hint=source_hint,
+                min_candles=int(fetch_target_by_tf.get(tf) or fetch_target),
+                include_extended=include_history_extended,
+                append_live_quote=False,
+            )
+            out[tf] = _clean_backtest_closes(closes)
+        return out
+
+    def _simulate_rule_series_by_timeframe(
+        closes_by_tf: dict[str, list[float]],
+        *,
+        forced_signals_by_offset: Optional[dict[int, str]] = None,
+    ) -> dict[str, Any]:
+        if not closes_by_tf:
             return {
                 "ok": False,
-                "candles_fetched": len(closes),
-                "reason": f"need >= {fetch_target} candles for {lookback} evaluation bars plus {min_required} warmup, got {len(closes)}",
+                "candles_fetched": 0,
+                "reason": "no candle data available",
             }
-        if len(closes) < (min_required + 2):
+        execution_tf = tf_key if tf_key in closes_by_tf else next(iter(closes_by_tf.keys()))
+        execution_closes = closes_by_tf.get(execution_tf) or []
+        required_execution = int(min_required_by_tf.get(execution_tf, min_required))
+        rule_timeframes_for_eval = [] if forced_signals_by_offset is not None else list(rules_by_tf.keys())
+        shortage_lines: list[str] = []
+        for tf in rule_timeframes_for_eval:
+            tf_rules = rules_by_tf.get(tf) or []
+            tf_closes = closes_by_tf.get(tf) or []
+            tf_min_required = int(min_required_by_tf.get(tf, _indicator_rules_chart_config(tf_rules).get("min_required") or 30))
+            if len(tf_closes) < (tf_min_required + 2):
+                shortage_lines.append(f"{tf} need >= {tf_min_required + 2}, got {len(tf_closes)}")
+        if len(execution_closes) < (required_execution + 2):
+            shortage_lines.append(
+                f"execution {execution_tf} need >= {required_execution + 2}, got {len(execution_closes)}"
+            )
+        if shortage_lines:
             return {
                 "ok": False,
-                "candles_fetched": len(closes),
-                "reason": f"need >= {min_required + 2} candles, got {len(closes)}",
+                "candles_fetched": len(execution_closes),
+                "reason": "; ".join(shortage_lines),
             }
-        start_idx = max(int(min_required), int(len(closes) - lookback))
-        end_idx = len(closes) - 2
+
+        eval_capacity = len(execution_closes) - 1 - required_execution
+        for tf in rule_timeframes_for_eval:
+            tf_rules = rules_by_tf.get(tf) or []
+            tf_closes = closes_by_tf.get(tf) or []
+            tf_min_required = int(min_required_by_tf.get(tf, _indicator_rules_chart_config(tf_rules).get("min_required") or 30))
+            eval_capacity = min(eval_capacity, len(tf_closes) - 1 - tf_min_required)
+        if forced_signals_by_offset is not None and forced_signals_by_offset:
+            eval_capacity = min(eval_capacity, max(int(offset) for offset in forced_signals_by_offset))
+
+        eval_bars = min(int(lookback), int(eval_capacity))
+        if eval_bars <= 0:
+            return {
+                "ok": False,
+                "candles_fetched": len(execution_closes),
+                "reason": "not enough aligned evaluation bars after warmup",
+            }
+
+        end_idx = len(execution_closes) - 2
+        start_idx = end_idx - eval_bars + 1
         if end_idx <= start_idx:
             return {
                 "ok": False,
-                "candles_fetched": len(closes),
+                "candles_fetched": len(execution_closes),
                 "reason": "not enough evaluation bars after warmup",
             }
 
         signals: dict[int, str] = {}
+        signals_by_offset: dict[int, str] = {}
         for i in range(start_idx, end_idx + 1):
-            window = closes[: i + 1]
-            checks = _build_indicator_rule_checks(rules, window, float(window[-1]))
-            signals[i] = _indicator_signal_from_checks_for_backtest(checks)
+            offset_from_end = int(len(execution_closes) - 1 - i)
+            if forced_signals_by_offset is not None:
+                signal = str(forced_signals_by_offset.get(offset_from_end) or "HOLD").strip().upper()
+                if signal not in ("BUY", "SELL", "HOLD"):
+                    signal = "HOLD"
+            else:
+                ohlc_windows: dict[str, tuple[list[float], list[float], list[float], list[float]]] = {}
+                for tf in rules_by_tf:
+                    tf_closes = closes_by_tf.get(tf) or []
+                    tf_end_idx = int(len(tf_closes) - 1 - offset_from_end)
+                    if tf_end_idx < 1:
+                        continue
+                    tf_window = tf_closes[: tf_end_idx + 1]
+                    ohlc_windows[tf] = _market_synthetic_ohlc_from_closes(tf_window)
+                checks = _build_indicator_rule_checks_by_timeframe(
+                    rules,
+                    ohlc_windows,
+                    default_timeframe=timeframe,
+                    apply_overrides=True,
+                )
+                signal = _indicator_signal_from_checks_for_backtest(checks)
+            signals[i] = signal
+            signals_by_offset[offset_from_end] = signal
         stats = _simulate_signal_series_backtest(
-            closes,
+            execution_closes,
             signals_by_index=signals,
             start_idx=start_idx,
             end_idx=end_idx,
@@ -10078,105 +10338,77 @@ def _render_indicatorforge_backtest_html(
             stoploss_arm_gain_pct=stoploss_arm_gain,
             stoploss_trigger_pct=stoploss_trigger,
         )
-        stats["candles_fetched"] = len(closes)
+        stats["candles_fetched"] = len(execution_closes)
+        stats["base_timeframe"] = execution_tf
+        stats["timeframes"] = list(rules_by_tf.keys())
+        stats["_signals_by_offset"] = signals_by_offset
         return stats
 
     if entangled_enabled:
-        primary_closes = _market_fetch_closes(
-            primary_symbol,
-            timeframe,
-            broker_hint=source_hint,
-            min_candles=fetch_target,
-            include_extended=include_history_extended,
-            append_live_quote=False,
-        )
-        inverse_closes = _market_fetch_closes(
-            inverse_symbol,
-            timeframe,
-            broker_hint=source_hint,
-            min_candles=fetch_target,
-            include_extended=include_history_extended,
-            append_live_quote=False,
-        )
-        n = min(len(primary_closes), len(inverse_closes))
-        if n < (min_required + 2):
-            short_msg = f"need >= {min_required + 2} aligned candles, got {n}"
-            _render_stats_row(primary_symbol, {"ok": False, "candles_fetched": len(primary_closes), "reason": short_msg})
-            _render_stats_row(inverse_symbol, {"ok": False, "candles_fetched": len(inverse_closes), "reason": short_msg})
-        elif n < fetch_target:
-            short_msg = f"need >= {fetch_target} aligned candles for {lookback} evaluation bars plus {min_required} warmup, got {n}"
-            _render_stats_row(primary_symbol, {"ok": False, "candles_fetched": len(primary_closes), "reason": short_msg})
-            _render_stats_row(inverse_symbol, {"ok": False, "candles_fetched": len(inverse_closes), "reason": short_msg})
+        timeframe_keys = list(rules_by_tf.keys())
+        if tf_key not in timeframe_keys:
+            timeframe_keys = [tf_key] + timeframe_keys
+        primary_closes_by_tf = _fetch_backtest_closes_by_timeframe(primary_symbol, timeframe_keys)
+        inverse_closes_by_tf = _fetch_backtest_closes_by_timeframe(inverse_symbol, [tf_key])
+        primary_stats = _simulate_rule_series_by_timeframe(primary_closes_by_tf)
+        primary_offsets = primary_stats.get("_signals_by_offset") if isinstance(primary_stats, dict) else {}
+        if isinstance(primary_stats, dict) and bool(primary_stats.get("ok")) and isinstance(primary_offsets, dict):
+            inverse_forced = {
+                int(offset): _invert_signal(signal)
+                for offset, signal in primary_offsets.items()
+            }
+            inverse_stats = _simulate_rule_series_by_timeframe(inverse_closes_by_tf, forced_signals_by_offset=inverse_forced)
         else:
-            p = [float(v) for v in primary_closes[-n:]]
-            q = [float(v) for v in inverse_closes[-n:]]
-            start_idx = max(int(min_required), int(n - lookback))
-            end_idx = n - 2
-            if end_idx <= start_idx:
-                short_msg = "not enough evaluation bars after warmup"
-                _render_stats_row(primary_symbol, {"ok": False, "candles_fetched": len(primary_closes), "reason": short_msg})
-                _render_stats_row(inverse_symbol, {"ok": False, "candles_fetched": len(inverse_closes), "reason": short_msg})
-            else:
-                primary_signals: dict[int, str] = {}
-                for i in range(start_idx, end_idx + 1):
-                    window = p[: i + 1]
-                    checks = _build_indicator_rule_checks(rules, window, float(window[-1]))
-                    primary_signals[i] = _indicator_signal_from_checks_for_backtest(checks)
-                inverse_signals = {i: _invert_signal(primary_signals.get(i, "HOLD")) for i in range(start_idx, end_idx + 1)}
-                primary_stats = _simulate_signal_series_backtest(
-                    p,
-                    signals_by_index=primary_signals,
-                    start_idx=start_idx,
-                    end_idx=end_idx,
-                    stoploss_enabled=stoploss_on,
-                    stoploss_arm_gain_pct=stoploss_arm_gain,
-                    stoploss_trigger_pct=stoploss_trigger,
-                )
-                inverse_stats = _simulate_signal_series_backtest(
-                    q,
-                    signals_by_index=inverse_signals,
-                    start_idx=start_idx,
-                    end_idx=end_idx,
-                    stoploss_enabled=stoploss_on,
-                    stoploss_arm_gain_pct=stoploss_arm_gain,
-                    stoploss_trigger_pct=stoploss_trigger,
-                )
-                primary_stats["candles_fetched"] = len(primary_closes)
-                inverse_stats["candles_fetched"] = len(inverse_closes)
-                primary_note = "Primary rules drive signal."
-                inverse_note = f"Inverse follows opposite of {primary_symbol}."
-                if source_hint == "robinhood":
-                    if len(primary_closes) < fetch_target:
-                        primary_note += f" Robinhood returned {len(primary_closes)} of {fetch_target} requested candles including warmup."
-                    if len(inverse_closes) < fetch_target:
-                        inverse_note += f" Robinhood returned {len(inverse_closes)} of {fetch_target} requested candles including warmup."
-                _render_stats_row(primary_symbol, primary_stats, note=primary_note)
-                _render_stats_row(inverse_symbol, inverse_stats, note=inverse_note)
+            inverse_stats = {
+                "ok": False,
+                "candles_fetched": len(inverse_closes_by_tf.get(tf_key) or []),
+                "reason": "primary signal unavailable",
+            }
+        tf_note = "Rule timeframes: " + ", ".join(rules_by_tf.keys())
+        primary_note = f"Primary rules drive signal. {tf_note}."
+        inverse_note = f"Inverse follows opposite of {primary_symbol} on {tf_key}. {tf_note}."
+        if source_hint == "robinhood":
+            primary_short = [
+                f"{tf} returned {len(primary_closes_by_tf.get(tf) or [])}/{int(fetch_target_by_tf.get(tf) or fetch_target)}"
+                for tf in timeframe_keys
+                if len(primary_closes_by_tf.get(tf) or []) < int(fetch_target_by_tf.get(tf) or fetch_target)
+            ]
+            inverse_len = len(inverse_closes_by_tf.get(tf_key) or [])
+            if primary_short:
+                primary_note += " Robinhood " + "; ".join(primary_short) + "."
+            if inverse_len < fetch_target:
+                inverse_note += f" Robinhood returned {inverse_len}/{fetch_target} requested execution candles."
+        _render_stats_row(primary_symbol, primary_stats, note=primary_note)
+        _render_stats_row(inverse_symbol, inverse_stats, note=inverse_note)
     else:
         for sym in syms:
-            closes = _market_fetch_closes(
-                sym,
-                timeframe,
-                broker_hint=source_hint,
-                min_candles=fetch_target,
-                include_extended=include_history_extended,
-                append_live_quote=False,
-            )
-            closes = [float(v) for v in closes if _to_float_opt(v) is not None]
-            stats = _simulate_rule_series(closes)
+            timeframe_keys = list(rules_by_tf.keys())
+            if tf_key not in timeframe_keys:
+                timeframe_keys = [tf_key] + timeframe_keys
+            closes_by_tf = _fetch_backtest_closes_by_timeframe(sym, timeframe_keys)
+            stats = _simulate_rule_series_by_timeframe(closes_by_tf)
             note = ""
             if lookback_note:
                 note = lookback_note
-            if source_hint == "robinhood" and len(closes) < fetch_target:
-                note = f"Robinhood returned {len(closes)} of {fetch_target} requested candles including warmup."
+            tf_note = "Rule timeframes: " + ", ".join(rules_by_tf.keys())
+            note = (note + " " if note else "") + tf_note + "."
+            if source_hint == "robinhood":
+                short_parts = [
+                    f"{tf} returned {len(closes_by_tf.get(tf) or [])}/{int(fetch_target_by_tf.get(tf) or fetch_target)}"
+                    for tf in timeframe_keys
+                    if len(closes_by_tf.get(tf) or []) < int(fetch_target_by_tf.get(tf) or fetch_target)
+                ]
+                if short_parts:
+                    note += " Robinhood " + "; ".join(short_parts) + "."
             _render_stats_row(sym, stats, note=note)
 
     rows.append("</tbody></table></div>")
     src_label = _market_source_label(source_hint, include_extended=include_history_extended)
     rows.append(
         "<div class='small' style='margin-top:6px;'>"
-        f"Quick Backtest · lookback={lookback} candles · timeframe {html.escape(str(timeframe))} · source={html.escape(src_label)}"
+        f"Quick Backtest · lookback={lookback} candles · execution timeframe {html.escape(str(timeframe))} · source={html.escape(src_label)}"
         f" · warmup={min_required} candles"
+        f" · rule timeframes={html.escape(', '.join(rules_by_tf.keys()) or str(timeframe))}"
         f"{' · requested=' + str(requested_lookback) if requested_lookback != lookback else ''}"
         "</div>"
     )
@@ -10316,7 +10548,7 @@ def _render_indicator_rules_html() -> str:
     if not rules:
         return "<div class='small'>No indicator rules yet.</div>"
     out = [
-        "<table><thead><tr><th>Name</th><th>Type</th><th>Config</th><th>State</th><th></th></tr></thead><tbody>"
+        "<table><thead><tr><th>Name</th><th>Type</th><th>Timeframe</th><th>Config</th><th>State</th><th></th></tr></thead><tbody>"
     ]
     for r in rules:
         rid = int(r["id"])
@@ -10333,6 +10565,8 @@ def _render_indicator_rules_html() -> str:
         if str(kind).strip().lower() in ("sar", "psar", "parabolic_sar", "parabolic"):
             kind = "sar"
         params = r.get("params") if isinstance(r.get("params"), dict) else {}
+        timeframe = _rule_timeframe(r, "")
+        tf_html = f"<span class='badge'>TF {html.escape(timeframe)}</span>" if timeframe else ""
         cfg = ""
         if kind == "ma":
             if _normalize_ma_mode(params.get("mode"), default="single") == "ribbon":
@@ -10520,6 +10754,7 @@ def _render_indicator_rules_html() -> str:
             "<tr>"
             f"<td><b>{html.escape(str(r.get('name') or ''))}</b></td>"
             f"<td>{type_txt}</td>"
+            f"<td>{tf_html}</td>"
             f"<td class='small'>{html.escape(cfg)}</td>"
             f"<td>{st}</td>"
             "<td>"
@@ -12210,6 +12445,11 @@ async def markets_rules_add(request: Request):
             out.append(txt)
         return out
 
+    rule_timeframe = _normalize_indicator_rule_timeframe(form.get("timeframe"), default="1h")
+
+    def _save_rule(rule_name: str, rule_kind: str, rule_params: dict[str, Any]) -> None:
+        _add_indicator_rule(rule_name, rule_kind, rule_params, timeframe=rule_timeframe)
+
     k = str(form.get("kind") or "").strip().lower()
     name = str(form.get("name") or "").strip()
     if k in ("ma", "ema"):
@@ -12235,7 +12475,7 @@ async def markets_rules_add(request: Request):
                         ),
                     }
                 )
-            _add_indicator_rule(
+            _save_rule(
                 name or "MA Ribbon",
                 "ma",
                 {
@@ -12261,7 +12501,7 @@ async def markets_rules_add(request: Request):
                 "unless_action": str(form.get("ma_unless_action") or "sell").strip().lower(),
             }
             default_name = f"{'EMA' if selected_type == 'ema' else 'MA'}{params['length']}"
-            _add_indicator_rule(name or default_name, "ma", params)
+            _save_rule(name or default_name, "ma", params)
     elif k == "macd":
         mode = str(form.get("macd_mode") or "signal_cross").strip().lower()
         if mode not in (
@@ -12291,7 +12531,7 @@ async def markets_rules_add(request: Request):
             ),
             "signal_override_targets": _list("macd_signal_override_targets") if override_enabled else [],
         }
-        _add_indicator_rule(name or "MACD", "macd", params)
+        _save_rule(name or "MACD", "macd", params)
     elif k == "rsi":
         override_enabled = _flag("rsi_signal_override_enabled")
         params = {
@@ -12308,13 +12548,13 @@ async def markets_rules_add(request: Request):
             ),
             "signal_override_targets": _list("rsi_signal_override_targets") if override_enabled else [],
         }
-        _add_indicator_rule(name or "RSI", "rsi", params)
+        _save_rule(name or "RSI", "rsi", params)
     elif k == "rsi_d":
         params = {
             "buy_above": _to_float_opt(form.get("rsi_d_buy_above")),
             "sell_below": _to_float_opt(form.get("rsi_d_sell_below")),
         }
-        _add_indicator_rule(name or "RSI Derivative", "rsi_d", params)
+        _save_rule(name or "RSI Derivative", "rsi_d", params)
     elif k in ("heikin_ashi", "ha"):
         mode = str(form.get("ha_mode") or "transition").strip().lower()
         if mode not in ("transition", "state"):
@@ -12332,7 +12572,7 @@ async def markets_rules_add(request: Request):
         doji_tol = _to_float_opt(form.get("ha_doji_tolerance_pct"))
         if doji_tol is not None:
             params["doji_tolerance_pct"] = max(0.0, float(doji_tol))
-        _add_indicator_rule(name or "Heikin Ashi", "heikin_ashi", params)
+        _save_rule(name or "Heikin Ashi", "heikin_ashi", params)
     elif k in ("bb", "bollinger", "bollinger_bands"):
         params = {
             "length": max(2, int(_to_int_opt(form.get("bb_length")) or 20)),
@@ -12343,7 +12583,7 @@ async def markets_rules_add(request: Request):
             "percent_b_buy_threshold": float(_to_float_opt(form.get("bb_percent_b_buy_threshold")) or 0.2),
             "percent_b_sell_threshold": float(_to_float_opt(form.get("bb_percent_b_sell_threshold")) or 0.8),
         }
-        _add_indicator_rule(name or "Bollinger Bands", "bb", params)
+        _save_rule(name or "Bollinger Bands", "bb", params)
     elif k in ("ichimoku", "ichimoku_cloud", "ichi"):
         buy_conditions = _normalize_ichi_conditions(_list("ichi_buy_condition"), default="hold")
         sell_conditions = _normalize_ichi_conditions(_list("ichi_sell_condition"), default="hold")
@@ -12369,7 +12609,7 @@ async def markets_rules_add(request: Request):
             "base_line_bounce_tolerance_pct": float(_to_float_opt(form.get("ichi_kijun_bounce_tolerance_pct")) or 0.35),
             "delayed_cross_lookback": max(1, int(_to_int_opt(form.get("ichi_delayed_cross_lookback")) or 3)),
         }
-        _add_indicator_rule(name or "Ichimoku", "ichimoku", params)
+        _save_rule(name or "Ichimoku", "ichimoku", params)
     elif k in ("ttm", "ttm_squeeze", "squeeze_momentum"):
         params = {
             "bb_length": max(2, int(_to_int_opt(form.get("ttm_bb_length")) or 20)),
@@ -12380,7 +12620,7 @@ async def markets_rules_add(request: Request):
             "buy_condition": _normalize_ttm_condition(form.get("ttm_buy_condition"), default="hold"),
             "sell_condition": _normalize_ttm_condition(form.get("ttm_sell_condition"), default="hold"),
         }
-        _add_indicator_rule(name or "TTM Squeeze", "ttm", params)
+        _save_rule(name or "TTM Squeeze", "ttm", params)
     elif k in ("roc", "rate_of_change"):
         params = {
             "length": max(1, int(_to_int_opt(form.get("roc_length")) or 12)),
@@ -12389,7 +12629,7 @@ async def markets_rules_add(request: Request):
             "buy_threshold_pct": float(_to_float_opt(form.get("roc_buy_threshold_pct")) or 0.0),
             "sell_threshold_pct": float(_to_float_opt(form.get("roc_sell_threshold_pct")) or 0.0),
         }
-        _add_indicator_rule(name or "ROC", "roc", params)
+        _save_rule(name or "ROC", "roc", params)
     elif k in ("sar", "psar", "parabolic_sar", "parabolic"):
         step = max(0.0001, float(_to_float_opt(form.get("sar_step")) or 0.02))
         max_step = max(step, float(_to_float_opt(form.get("sar_max_step")) or 0.2))
@@ -12399,7 +12639,7 @@ async def markets_rules_add(request: Request):
             "buy_condition": _normalize_sar_condition(form.get("sar_buy_condition"), default="hold"),
             "sell_condition": _normalize_sar_condition(form.get("sar_sell_condition"), default="hold"),
         }
-        _add_indicator_rule(name or "Parabolic SAR", "sar", params)
+        _save_rule(name or "Parabolic SAR", "sar", params)
     return RedirectResponse("/markets", status_code=303)
 
 
@@ -14889,10 +15129,6 @@ def run_status(run_id: int):
                     return "<div class='small' style='margin-top:8px'>Ticker Status: none</div>"
 
                 runtime_rules_raw = params_obj.get("indicator_rules_json") if isinstance(params_obj, dict) else []
-                runtime_rules = _normalize_indicator_rules_payload(runtime_rules_raw)
-                runtime_chart_cfg = _indicator_rules_chart_config(runtime_rules)
-                summary_html = _render_indicator_rule_summary_panel(runtime_rules, title="Configured Indicator Rules")
-
                 source_hint = (
                     "robinhood_crypto"
                     if script_tag == "IndicatorForge.Crypto.Robinhood"
@@ -14910,18 +15146,28 @@ def run_status(run_id: int):
                         include_history_extended = float(raw_ext) != 0.0
                     else:
                         include_history_extended = str(raw_ext or "").strip().lower() in ("1", "true", "yes", "on", "y")
-                runtime_min_required = max(2, int(runtime_chart_cfg["min_required"]))
-                runtime_candle_target = max(runtime_min_required, 600) if source_hint == "schwab" else runtime_min_required
                 market_tf_raw = tf_display if tf_display else timeframe
                 market_tf = str(market_tf_raw or "").strip()
                 if not market_tf and isinstance(params_obj, dict):
                     market_tf = str(params_obj.get("timeframe") or "").strip()
                 if not market_tf:
                     market_tf = "1h"
-                if source_hint == "schwab" and str(market_tf).strip().lower() == "1h":
-                    # Keep rule logic threshold at runtime_min_required, but fetch extra bars
-                    # for chart overlays so long MAs are not collapsed to a sliver.
-                    runtime_candle_target = max(runtime_min_required + 80, runtime_min_required)
+                runtime_rules = _rules_with_default_timeframe(
+                    _normalize_indicator_rules_payload(runtime_rules_raw, default_timeframe=market_tf),
+                    market_tf,
+                )
+                runtime_rules_by_tf = _rules_by_timeframe(runtime_rules, market_tf)
+                runtime_chart_cfg_by_tf = {
+                    tf: _indicator_rules_chart_config(tf_rules) for tf, tf_rules in runtime_rules_by_tf.items()
+                }
+                runtime_candle_target_by_tf: dict[str, int] = {}
+                for tf, cfg in runtime_chart_cfg_by_tf.items():
+                    min_required = max(2, int(cfg["min_required"]))
+                    target = max(min_required, 600) if source_hint == "schwab" else min_required
+                    if source_hint == "schwab" and str(tf).strip().lower() == "1h":
+                        target = max(min_required + 80, min_required)
+                    runtime_candle_target_by_tf[tf] = target
+                summary_html = _render_indicator_rule_summary_panel(runtime_rules, title="Configured Indicator Rules")
                 robinhood_markets_ok = True
                 if source_hint in ("robinhood", "robinhood_crypto"):
                     ok_rh, _msg_rh = _ensure_robinhood_markets_session()
@@ -14930,7 +15176,11 @@ def run_status(run_id: int):
                 chart_closes_cache: dict[str, list[float]] = {}
                 chart_ohlc_cache: dict[str, tuple[list[float], list[float], list[float], list[float]]] = {}
 
-                def _indicatorforge_runtime_chart(*, symbol: str, chart: Any, price_hint: Any) -> str:
+                def _indicatorforge_runtime_chart(*, symbol: str, timeframe_key: str, chart: Any, price_hint: Any) -> str:
+                    tf = _normalize_indicator_rule_timeframe(timeframe_key, default=market_tf)
+                    runtime_chart_cfg = runtime_chart_cfg_by_tf.get(tf) or _indicator_rules_chart_config([])
+                    runtime_candle_target = int(runtime_candle_target_by_tf.get(tf) or max(2, int(runtime_chart_cfg.get("min_required") or 30)))
+
                     def _trim_tail_outlier(values: list[float], expected_last: Optional[float]) -> list[float]:
                         # Drop a likely bad terminal quote if it is far outside recent candle volatility.
                         n = len(values)
@@ -14958,12 +15208,12 @@ def run_status(run_id: int):
                             return values[:-1]
                         return values
 
-                    if not isinstance(chart, dict):
-                        return "<span class='small'>—</span>"
-                    raw_prices = chart.get("price")
+                    chart_obj = chart if isinstance(chart, dict) else {}
+                    raw_prices = chart_obj.get("price")
                     if not isinstance(raw_prices, list):
-                        return "<span class='small'>—</span>"
-                    key = str(symbol or "").strip().upper()
+                        raw_prices = []
+                    symbol_key = str(symbol or "").strip().upper()
+                    cache_key = f"{symbol_key}|{tf}"
 
                     def _chart_float_series(raw: Any) -> list[float]:
                         vals: list[float] = []
@@ -14989,9 +15239,9 @@ def run_status(run_id: int):
                             continue
                         closes.append(fv)
                     ohlc: Optional[tuple[list[float], list[float], list[float], list[float]]] = None
-                    chart_opens = _chart_float_series(chart.get("open"))
-                    chart_highs = _chart_float_series(chart.get("high"))
-                    chart_lows = _chart_float_series(chart.get("low"))
+                    chart_opens = _chart_float_series(chart_obj.get("open"))
+                    chart_highs = _chart_float_series(chart_obj.get("high"))
+                    chart_lows = _chart_float_series(chart_obj.get("low"))
                     if (
                         len(chart_opens) == len(closes)
                         and len(chart_highs) == len(closes)
@@ -14999,20 +15249,19 @@ def run_status(run_id: int):
                     ):
                         ohlc = (chart_opens, chart_highs, chart_lows, list(closes))
                     if len(closes) < runtime_candle_target:
-                        key = str(symbol or "").strip().upper()
-                        fetched = fetched_closes_cache.get(key)
+                        fetched = fetched_closes_cache.get(cache_key)
                         if fetched is None and (source_hint not in ("robinhood", "robinhood_crypto") or robinhood_markets_ok):
                             try:
                                 fetched = _market_fetch_closes(
-                                    key,
-                                    market_tf,
+                                    symbol_key,
+                                    tf,
                                     broker_hint=source_hint,
                                     min_candles=runtime_candle_target,
                                     include_extended=include_history_extended,
                                 )
                             except Exception:
                                 fetched = []
-                            fetched_closes_cache[key] = fetched
+                            fetched_closes_cache[cache_key] = fetched
                         if isinstance(fetched, list) and len(fetched) >= 2:
                             closes = [float(x) for x in fetched if isinstance(x, (int, float)) and math.isfinite(float(x)) and float(x) > 0.0]
                             ohlc = None
@@ -15044,10 +15293,10 @@ def run_status(run_id: int):
                             ohlc = (o[:trim_len], h[:trim_len], l[:trim_len], c[:trim_len])
                     if len(closes) < 2:
                         return "<span class='small'>—</span>"
-                    if key:
-                        chart_closes_cache[key] = list(closes)
+                    if cache_key:
+                        chart_closes_cache[cache_key] = list(closes)
                         if ohlc is not None:
-                            chart_ohlc_cache[key] = ohlc
+                            chart_ohlc_cache[cache_key] = ohlc
                     chart_opens_arg: Optional[list[float]] = None
                     chart_highs_arg: Optional[list[float]] = None
                     chart_lows_arg: Optional[list[float]] = None
@@ -15079,6 +15328,29 @@ def run_status(run_id: int):
                         show_price_markers=True,
                     )
 
+                def _indicatorforge_runtime_chart_row(*, symbol: str, chart: Any, charts_by_timeframe: Any, price_hint: Any) -> str:
+                    parts: list[str] = []
+                    chart_map = charts_by_timeframe if isinstance(charts_by_timeframe, dict) else {}
+                    for tf in runtime_rules_by_tf:
+                        tf_chart = chart_map.get(tf) or chart_map.get(str(tf).upper())
+                        if tf_chart is None and tf == _normalize_indicator_rule_timeframe(market_tf, default="1h"):
+                            tf_chart = chart
+                        rendered = _indicatorforge_runtime_chart(
+                            symbol=symbol,
+                            timeframe_key=tf,
+                            chart=tf_chart if isinstance(tf_chart, dict) else {},
+                            price_hint=price_hint,
+                        )
+                        parts.append(
+                            "<div class='indicatorforge-tf-chart'>"
+                            f"<div class='small'><b>TF {html.escape(tf)}</b></div>"
+                            f"{rendered}"
+                            "</div>"
+                        )
+                    if not parts:
+                        return "<span class='small'>—</span>"
+                    return "<div class='indicatorforge-chart-row'>" + "".join(parts) + "</div>"
+
                 def _refresh_runtime_rule_item(
                     *,
                     symbol: str,
@@ -15101,7 +15373,9 @@ def run_status(run_id: int):
                     if not str(rule.get("kind") or "").strip():
                         return item
 
-                    closes = chart_closes_cache.get(str(symbol or "").strip().upper())
+                    tf = _rule_timeframe(rule, market_tf)
+                    cache_key = f"{str(symbol or '').strip().upper()}|{tf}"
+                    closes = chart_closes_cache.get(cache_key)
                     if not isinstance(closes, list) or len(closes) < 2:
                         return item
 
@@ -15112,7 +15386,7 @@ def run_status(run_id: int):
                         return item
 
                     try:
-                        ohlc = chart_ohlc_cache.get(str(symbol or "").strip().upper())
+                        ohlc = chart_ohlc_cache.get(cache_key)
                         if ohlc is not None:
                             refreshed = _eval_indicator_rule(
                                 rule,
@@ -15319,9 +15593,11 @@ def run_status(run_id: int):
                     idx = _to_int_opt(col.get("index"))
                     idx_prefix = f"#{int(idx) + 1} " if idx is not None and idx >= 0 else ""
                     kind_txt = str(col.get("display_kind") or col.get("kind") or "").strip().upper()
-                    kind_html = f"<div class='small'>{html.escape(kind_txt)}</div>" if kind_txt else ""
+                    tf_txt = _rule_timeframe(col.get("rule") if isinstance(col.get("rule"), dict) else {}, market_tf)
+                    kind_detail = " · ".join([part for part in (kind_txt, f"TF {tf_txt}" if tf_txt else "") if part])
+                    kind_html = f"<div class='small'>{html.escape(kind_detail)}</div>" if kind_detail else ""
                     headers.append(f"<th>{html.escape(idx_prefix + nm)}{kind_html}</th>")
-                headers.append("<th class='chart-col'>Chart</th>")
+                headers.append("<th class='chart-col'>Charts</th>")
 
                 out: list[str] = []
                 if summary_html:
@@ -15337,7 +15613,12 @@ def run_status(run_id: int):
                     sym = html.escape(sym_raw or "—")
                     stale_quote = bool(t.get("quote_stale"))
                     chart_price_hint = None if stale_quote else t.get("price")
-                    chart_html = _indicatorforge_runtime_chart(symbol=sym_raw, chart=t.get("chart"), price_hint=chart_price_hint)
+                    chart_html = _indicatorforge_runtime_chart_row(
+                        symbol=sym_raw,
+                        chart=t.get("chart"),
+                        charts_by_timeframe=t.get("charts_by_timeframe"),
+                        price_hint=chart_price_hint,
+                    )
                     action_signal = str(t.get("signal") or "HOLD").upper()
                     if action_signal not in ("BUY", "SELL", "HOLD"):
                         action_signal = "HOLD"
@@ -15501,12 +15782,11 @@ def run_status(run_id: int):
                     out.append("<tr>" + "".join(cells) + "</tr>")
 
                 out.append("</tbody></table></div>")
-                src_tf = tf_display if tf_display else timeframe
-                src_txt = html.escape(str(src_tf)) if src_tf else "n/a"
+                src_txt = html.escape(", ".join(runtime_rules_by_tf.keys()) or str(tf_display if tf_display else timeframe) or "n/a")
                 src_label = _market_source_label(source_hint, include_extended=include_history_extended)
                 out.append(
                     f"<div class='small' style='margin-top:6px;'>"
-                    f"Source: Runtime payload + {html.escape(src_label)} refresh · timeframe {src_txt}"
+                    f"Source: Runtime payload + {html.escape(src_label)} refresh · timeframes {src_txt}"
                     "</div>"
                 )
                 return "".join(out)

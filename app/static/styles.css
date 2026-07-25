@@ -580,6 +580,17 @@ tbody tr:hover td {
   min-width: 720px;
 }
 
+.indicatorforge-chart-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: max-content;
+}
+
+.indicatorforge-tf-chart {
+  flex: 0 0 auto;
+}
+
 .signal-buy {
   color: var(--ok);
   font-weight: 700;

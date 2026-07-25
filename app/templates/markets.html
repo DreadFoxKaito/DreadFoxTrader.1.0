@@ -815,6 +815,18 @@
       timeframeEl.addEventListener("change", syncOptimizerTimeframe);
       syncOptimizerTimeframe();
     }
+    document.querySelectorAll("form[action='/markets/rules/add']").forEach((form) => {
+      form.addEventListener("submit", () => {
+        let tf = form.querySelector("input[name='timeframe']");
+        if (!tf) {
+          tf = document.createElement("input");
+          tf.type = "hidden";
+          tf.name = "timeframe";
+          form.appendChild(tf);
+        }
+        tf.value = timeframeEl ? String(timeframeEl.value || "1h") : "1h";
+      });
+    });
     if (backtestRefreshBtnEl) {
       backtestRefreshBtnEl.addEventListener("click", triggerBacktestRefresh);
     }
