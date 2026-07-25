@@ -309,19 +309,36 @@ git clone https://github.com/DreadFoxKaito/DreadFoxTrader.1.0.git
 cd DreadFoxTrader.1.0
 ```
 
-2. Run the installer:
+2. Run the installer for your platform.
+
+Linux / Raspberry Pi:
 
 ```bash
 ./install.sh
 ```
 
-The installer installs supported Linux system packages when possible, creates `.venv/`,
-installs `requirements.txt`, generates local `.env` settings, and initializes the database.
+Windows:
+
+```powershell
+.\install_windows.bat
+```
+
+The installer creates `.venv/`, installs `requirements.txt`, generates local `.env`
+settings, and initializes the database. The Linux installer also installs supported
+system packages when possible.
 
 Start the app after installation:
 
+Linux / Raspberry Pi:
+
 ```bash
 ./run_app.sh
+```
+
+Windows:
+
+```powershell
+.\run_windows.bat
 ```
 
 Optional installer modes:
@@ -335,11 +352,23 @@ Optional installer modes:
 ./install.sh --with-strategy
 ```
 
+Windows uses PowerShell-style switches:
+
+```powershell
+.\install_windows.bat -Start
+.\install_windows.bat -CleanRuntime
+.\install_windows.bat -WithSound
+.\install_windows.bat -WithAi
+.\install_windows.bat -WithStrategy
+```
+
 On rpm-ostree systems such as Bazzite, install host packages with `rpm-ostree`, reboot, then rerun:
 
 ```bash
 ./install.sh --no-system-packages
 ```
+
+For Windows-specific setup details, see `WINDOWS_INSTALL.md`.
 
 Manual setup is still supported:
 
