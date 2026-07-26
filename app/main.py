@@ -14055,19 +14055,19 @@ def _strategy_forge_quick_compact_value(value: Any) -> str:
     return str(value)
 
 
-def _strategy_forge_quick_symbol_returns_html(symbol_returns: Any, symbol_one_share_profit: Any = None) -> str:
+def _strategy_forge_quick_symbol_returns_html(symbol_returns: Any, symbol_total_profit: Any = None) -> str:
     has_returns = isinstance(symbol_returns, dict) and bool(symbol_returns)
-    has_profit = isinstance(symbol_one_share_profit, dict) and bool(symbol_one_share_profit)
+    has_profit = isinstance(symbol_total_profit, dict) and bool(symbol_total_profit)
     if not has_returns and not has_profit:
         return ""
     rows: list[str] = []
     if has_profit:
         profit_bits: list[str] = []
-        for symbol, value in list(symbol_one_share_profit.items())[:12]:
+        for symbol, value in list(symbol_total_profit.items())[:12]:
             profit_bits.append(f"{html.escape(str(symbol).upper())} {_strategy_forge_quick_fmt_money(value)}")
-        if len(symbol_one_share_profit) > 12:
+        if len(symbol_total_profit) > 12:
             profit_bits.append("...")
-        rows.append(f"<strong>Symbol 1-share P/L</strong>: {', '.join(profit_bits)}")
+        rows.append(f"<strong>Symbol total $ P/L</strong>: {', '.join(profit_bits)}")
     if has_returns:
         return_bits: list[str] = []
         for symbol, value in list(symbol_returns.items())[:12]:
@@ -14089,8 +14089,11 @@ def _strategy_forge_quick_rule_settings_html(candidate: Any) -> str:
     entry_threshold = params.get("entry_threshold", rule_count)
     exit_threshold = params.get("exit_threshold", 1)
     execution_tf = str(payload.get("timeframe") or "").strip()
+    symbols = payload.get("symbols") if isinstance(payload.get("symbols"), list) else []
+    symbol_text = ",".join(str(symbol).upper() for symbol in symbols if str(symbol).strip())
     summary_bits = [
         f"execution_tf={execution_tf or 'N/A'}",
+        f"symbols={symbol_text or 'N/A'}",
         f"entry={entry_threshold}/{rule_count}",
         f"exit={exit_threshold}/{rule_count}",
     ]
@@ -14139,6 +14142,7 @@ def _strategy_forge_quick_public_row(row: dict[str, Any], describe_candidate: An
     candidate = row.get("candidate")
     reasons = list(row.get("reasons") or [])
     timeframes = list(row.get("timeframes") or [])
+    symbols = list(row.get("symbols") or [])
     combo_text = str(row.get("combo") or "")
     if not combo_text and candidate is not None:
         try:
@@ -14147,6 +14151,10 @@ def _strategy_forge_quick_public_row(row: dict[str, Any], describe_candidate: An
             combo_text = "combo unavailable"
     if not timeframes and isinstance(metrics.get("rule_timeframes"), list):
         timeframes = [str(item) for item in metrics.get("rule_timeframes") or []]
+    if not symbols and isinstance(metrics.get("tested_symbols"), list):
+        symbols = [str(item).upper() for item in metrics.get("tested_symbols") or []]
+    if not symbols and candidate is not None:
+        symbols = [str(item).upper() for item in getattr(candidate, "symbols", [])]
     if reasons:
         combo_text += " | " + ", ".join(str(item) for item in reasons[:2])
     return {
@@ -14155,6 +14163,7 @@ def _strategy_forge_quick_public_row(row: dict[str, Any], describe_candidate: An
         "generation": int(row.get("generation") or 0),
         "evaluation": int(row.get("evaluation") or 0),
         "origin": str(row.get("origin") or ""),
+        "symbols": ", ".join(str(item).upper() for item in symbols if str(item).strip()),
         "timeframe": ", ".join(str(item) for item in timeframes) or str(row.get("timeframe") or getattr(candidate, "timeframe", "") or ""),
         "score": float(row.get("score") or 0.0),
         "total_return": metrics.get("total_return"),
@@ -14292,8 +14301,8 @@ def _render_strategy_forge_quick_rows(
         return "<div class='small'>No evaluated candidates yet.</div>"
     action_head = "<th>Action</th>" if final else ""
     head = (
-        "<thead><tr><th>Rank</th><th>Run</th><th>Grade</th><th>Gen</th><th>Eval</th><th>TF</th><th>Origin</th>"
-        f"<th>Score</th><th>1-Share P/L</th><th>Return %</th><th>Worst</th><th>Drawdown</th><th>PF</th><th>Win</th><th>Trades</th><th>Indicators</th>{action_head}</tr></thead>"
+        "<thead><tr><th>Rank</th><th>Run</th><th>Grade</th><th>Gen</th><th>Eval</th><th>Tickers</th><th>TF</th><th>Origin</th>"
+        f"<th>Score</th><th title='Sum of dollar P/L over all completed trades, assuming one share per trade'>Total $ P/L</th><th>Return %</th><th>Worst</th><th>Drawdown</th><th>PF</th><th>Win</th><th>Trades</th><th>Indicators</th>{action_head}</tr></thead>"
     )
     out = ["<div class='status-table-wrap'><table>", head, "<tbody>"]
     for index, row in enumerate(rows, start=1):
@@ -14324,6 +14333,7 @@ def _render_strategy_forge_quick_rows(
             f"<td>{html.escape(grade)}</td>"
             f"<td>{int(row.get('generation') or 0)}</td>"
             f"<td>{int(row.get('evaluation') or 0)}</td>"
+            f"<td class='small'>{html.escape(str(row.get('symbols') or ''))}</td>"
             f"<td>{html.escape(str(row.get('timeframe') or ''))}</td>"
             f"<td>{html.escape(str(row.get('origin') or ''))}</td>"
             f"<td>{_strategy_forge_quick_fmt_num(row.get('score'))}</td>"
@@ -14485,6 +14495,7 @@ def _strategy_forge_quick_worker(job_id: str, config: dict[str, Any]) -> None:
             describe_candidate,
             grade_combo_metrics,
             normalize_timeframe,
+            normalize_symbols,
         )
         from strategy_forge.data_loader import normalize_rows
         from strategy_forge.result_store import store_backtest_result, store_robustness_test
@@ -14643,6 +14654,7 @@ def _strategy_forge_quick_worker(job_id: str, config: dict[str, Any]) -> None:
             min_rules=min_rule_count,
             max_rules=max_rule_count,
             timeframes=tuple(rule_timeframe_pool),
+            universe_symbols=tuple(active_symbols),
         )
         bt_config = BacktestConfig(
             initial_capital=100000.0,
@@ -14665,8 +14677,9 @@ def _strategy_forge_quick_worker(job_id: str, config: dict[str, Any]) -> None:
                     rule_tf = normalize_timeframe(rule.get("timeframe") or params.get("timeframe"), default=tf)
                     if rule_tf not in rule_timeframe_pool:
                         rule["timeframe"] = tf
+                seed_symbols = [symbol for symbol in normalize_symbols(seeded.symbols) if symbol in active_symbols] or active_symbols
                 return build_combo_candidate(
-                    symbols=active_symbols,
+                    symbols=seed_symbols,
                     timeframe=tf,
                     rules=seed_rules,
                     entry_threshold=seeded_params.get("entry_threshold"),
@@ -14684,11 +14697,18 @@ def _strategy_forge_quick_worker(job_id: str, config: dict[str, Any]) -> None:
 
         def _evaluate_candidate(candidate: Any, generation: int, evaluation: int, origin: str) -> Optional[dict[str, Any]]:
             try:
+                candidate = copy.deepcopy(candidate)
+                candidate_symbols = [
+                    symbol for symbol in normalize_symbols(getattr(candidate, "symbols", [])) if symbol in active_symbols
+                ] or list(active_symbols)
+                candidate.symbols = candidate_symbols
                 rule_timeframes = [normalize_timeframe(item, default=tf) for item in candidate_rule_timeframes(candidate)]
                 symbol_results = []
-                for data in datasets:
-                    sym = str(data.symbol).upper()
+                for sym in candidate_symbols:
                     symbol_tf_map = datasets_by_symbol.get(sym, {})
+                    data = symbol_tf_map.get(tf)
+                    if data is None:
+                        raise ValueError(f"{sym} missing execution candles for {tf}")
                     missing = [rule_tf for rule_tf in rule_timeframes if rule_tf not in symbol_tf_map]
                     if missing:
                         raise ValueError(f"{sym} missing candles for rule timeframe(s): {', '.join(missing)}")
@@ -14704,6 +14724,8 @@ def _strategy_forge_quick_worker(job_id: str, config: dict[str, Any]) -> None:
                     )
                 metrics = aggregate_result_metrics(symbol_results)
                 metrics["rule_timeframes"] = rule_timeframes
+                metrics["tested_symbols"] = candidate_symbols
+                metrics["symbol_count"] = len(candidate_symbols)
                 score = combo_search_score(metrics, min_trades=min_trade_count)
                 return {
                     "candidate": candidate,
@@ -14714,6 +14736,7 @@ def _strategy_forge_quick_worker(job_id: str, config: dict[str, Any]) -> None:
                     "timeframes": rule_timeframes,
                     "score": float(score),
                     "metrics": metrics,
+                    "symbols": candidate_symbols,
                     "symbol_results": symbol_results,
                 }
             except Exception as exc:
@@ -14950,9 +14973,13 @@ def _strategy_forge_quick_worker(job_id: str, config: dict[str, Any]) -> None:
         for row in top_rows:
             metrics = dict(row["metrics"])
             grade, reasons, robustness_score = grade_combo_metrics(metrics, min_trades=min_trade_count)
+            row_candidate = row["candidate"]
+            row_symbols = [
+                symbol for symbol in normalize_symbols(getattr(row_candidate, "symbols", [])) if symbol in active_symbols
+            ] or list(active_symbols)
             aggregate_result = BacktestResult(
-                candidate=row["candidate"],
-                symbol=",".join(active_symbols),
+                candidate=row_candidate,
+                symbol=",".join(row_symbols),
                 timeframe=tf,
                 metrics=metrics,
                 trades=[],

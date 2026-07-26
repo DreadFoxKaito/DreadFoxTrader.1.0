@@ -14,6 +14,7 @@ from .combo_search import (
     candidate_rule_timeframes,
     combo_search_score,
     grade_combo_metrics,
+    normalize_symbols,
     normalize_timeframe,
 )
 from .data_loader import load_ohlcv
@@ -77,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             min_rules=max(2, int(args.min_rules)),
             max_rules=max(2, int(args.max_rules)),
             timeframes=tuple(cli_timeframes),
+            universe_symbols=tuple(symbol.upper() for symbol in args.symbols),
         )
         total_evolved_evaluated = 0
         for timeframe in cli_timeframes:
@@ -99,10 +101,17 @@ def main(argv: list[str] | None = None) -> int:
 
             def evaluate(candidate: object) -> dict[str, object] | None:
                 try:
+                    candidate = copy.deepcopy(candidate)
+                    candidate_symbols = [
+                        symbol
+                        for symbol in normalize_symbols(getattr(candidate, "symbols", []))
+                        if (symbol, tf) in data_cache
+                    ] or list(active_symbols)
+                    candidate.symbols = candidate_symbols  # type: ignore[attr-defined]
                     required_timeframes = [normalize_timeframe(item, default=tf) for item in candidate_rule_timeframes(candidate)]  # type: ignore[arg-type]
                     symbol_results = []
-                    for data in datasets:
-                        symbol = str(data.symbol).upper()
+                    for symbol in candidate_symbols:
+                        data = data_cache[(symbol, tf)]
                         missing = [rule_tf for rule_tf in required_timeframes if (symbol, rule_tf) not in data_cache]
                         if missing:
                             raise ValueError(f"{symbol} missing candles for rule timeframe(s): {', '.join(missing)}")
@@ -118,9 +127,12 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     metrics = aggregate_result_metrics(symbol_results)
                     metrics["rule_timeframes"] = required_timeframes
+                    metrics["tested_symbols"] = candidate_symbols
+                    metrics["symbol_count"] = len(candidate_symbols)
                     return {
                         "candidate": candidate,
                         "metrics": metrics,
+                        "symbols": candidate_symbols,
                         "score": combo_search_score(metrics, min_trades=int(args.min_trades)),
                     }
                 except Exception:
@@ -181,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
                 grade, reasons, robustness_score = grade_combo_metrics(metrics, min_trades=int(args.min_trades))
                 result = BacktestResult(
                     candidate=row["candidate"],
-                    symbol=",".join(active_symbols),
+                    symbol=",".join(normalize_symbols(row.get("symbols") or active_symbols)),
                     timeframe=tf,
                     metrics=metrics,
                     trades=[],

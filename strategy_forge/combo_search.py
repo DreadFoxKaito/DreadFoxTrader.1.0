@@ -119,6 +119,15 @@ def _choice(value: Any, choices: Iterable[Any], fallback: Any) -> Any:
     return value if value in allowed else fallback
 
 
+def normalize_symbols(symbols: Iterable[Any]) -> list[str]:
+    out: list[str] = []
+    for symbol in symbols or []:
+        txt = str(symbol or "").strip().upper()
+        if txt and txt not in out:
+            out.append(txt)
+    return out
+
+
 def normalize_timeframe(value: Any, *, default: str = "1h") -> str:
     txt = str(value or "").strip().lower()
     aliases = {
@@ -380,7 +389,7 @@ def build_combo_candidate(
     return StrategyCandidate(
         strategy_name=COMBO_STRATEGY_NAME,
         timeframe=default_tf,
-        symbols=[str(symbol).upper() for symbol in symbols],
+        symbols=normalize_symbols(symbols),
         parameters=params,
         entry_rule={"at_least": [f"{entry_count} of {rule_count} indicator confirmations"], "rules": labels},
         exit_rule={"at_least": [f"{exit_count} of {rule_count} exit conditions"], "rules": labels},
@@ -392,6 +401,7 @@ def candidate_signature(candidate: StrategyCandidate) -> str:
     p = candidate.parameters
     payload = {
         "timeframe": candidate.timeframe,
+        "symbols": sorted(normalize_symbols(candidate.symbols)),
         "rules": p.get("rules") or [],
         "entry_threshold": p.get("entry_threshold"),
         "exit_threshold": p.get("exit_threshold"),
@@ -409,7 +419,9 @@ def describe_candidate(candidate: StrategyCandidate, *, max_rules: int = 5) -> s
     if len(p.get("rules") or []) > int(max_rules):
         rules.append("...")
     threshold = p.get("entry_threshold")
-    return f"{threshold}/{len(p.get('rules') or [])}: " + "; ".join(rules)
+    symbol_text = ",".join(normalize_symbols(candidate.symbols))
+    prefix = f"{symbol_text} | " if symbol_text else ""
+    return f"{prefix}{threshold}/{len(p.get('rules') or [])}: " + "; ".join(rules)
 
 
 def combo_search_score(metrics: dict[str, Any], *, min_trades: int = 1) -> float:
@@ -445,6 +457,7 @@ def aggregate_result_metrics(results: list[Any]) -> dict[str, Any]:
             "total_return": 0.0,
         }
     metrics = [dict(item.metrics) for item in results]
+    result_symbols = [str(item.symbol).upper() for item in results]
     rule_timeframes: list[str] = []
     for row in metrics:
         for tf in row.get("rule_timeframes") or []:
@@ -470,7 +483,9 @@ def aggregate_result_metrics(results: list[Any]) -> dict[str, Any]:
     return {
         "ok": True,
         "strategy_template": COMBO_STRATEGY_NAME,
-        "symbol": ",".join(str(item.symbol) for item in results),
+        "symbol": ",".join(result_symbols),
+        "tested_symbols": result_symbols,
+        "symbol_count": len(result_symbols),
         "timeframe": str(results[0].timeframe),
         "rule_timeframes": rule_timeframes,
         "start_date": str(first.get("start_date") or ""),
@@ -539,6 +554,7 @@ class OpenComboGenerator:
     min_rules: int = 2
     max_rules: int = 5
     timeframes: tuple[str, ...] = COMBO_TIMEFRAMES
+    universe_symbols: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         self.random = random.Random(self.seed)
@@ -550,11 +566,63 @@ class OpenComboGenerator:
             if tf not in normalized:
                 normalized.append(tf)
         self.timeframes = tuple(normalized or ("1h",))
+        self.universe_symbols = tuple(normalize_symbols(self.universe_symbols))
 
     def _random_timeframe(self, default: str = "1h") -> str:
         if not self.timeframes:
             return normalize_timeframe(default)
         return str(self.random.choice(tuple(self.timeframes)))
+
+    def _symbol_pool(self, symbols: Iterable[Any]) -> list[str]:
+        pool = normalize_symbols(self.universe_symbols) or normalize_symbols(symbols)
+        return pool or normalize_symbols(symbols)
+
+    def _random_symbol_subset(self, symbols: Iterable[Any]) -> list[str]:
+        pool = self._symbol_pool(symbols)
+        if len(pool) <= 1:
+            return pool
+        if self.random.random() < 0.65:
+            return pool
+        count = self.random.randint(1, len(pool))
+        selected = set(self.random.sample(pool, k=count))
+        return [symbol for symbol in pool if symbol in selected]
+
+    def _mutate_symbols(self, symbols: Iterable[Any]) -> list[str]:
+        pool = self._symbol_pool(symbols)
+        current = [symbol for symbol in normalize_symbols(symbols) if symbol in pool] or list(pool)
+        if len(pool) <= 1:
+            return current
+        mutated = list(current)
+        if len(mutated) > 1 and self.random.random() < 0.55:
+            max_remove = min(len(mutated) - 1, 2)
+            remove_count = self.random.randint(1, max_remove)
+            for symbol in self.random.sample(mutated, k=remove_count):
+                mutated.remove(symbol)
+        available = [symbol for symbol in pool if symbol not in mutated]
+        if available and self.random.random() < 0.25:
+            mutated.append(self.random.choice(available))
+        if not mutated:
+            mutated.append(self.random.choice(pool))
+        return [symbol for symbol in pool if symbol in set(mutated)]
+
+    def _crossover_symbols(self, left: StrategyCandidate, right: StrategyCandidate) -> list[str]:
+        left_symbols = normalize_symbols(left.symbols)
+        right_symbols = normalize_symbols(right.symbols)
+        pool = self._symbol_pool(left_symbols + right_symbols)
+        if len(pool) <= 1:
+            return pool
+        overlap = [symbol for symbol in left_symbols if symbol in right_symbols]
+        union = [symbol for symbol in pool if symbol in set(left_symbols + right_symbols)]
+        mode = self.random.random()
+        if overlap and mode < 0.30:
+            selected = overlap
+        elif mode < 0.65:
+            selected = list(self.random.choice((left_symbols, right_symbols))) or union
+        else:
+            selected = union or pool
+        if selected and self.random.random() < 0.35:
+            selected = self._mutate_symbols(selected)
+        return selected or [self.random.choice(pool)]
 
     def _maybe_mutate_rule_timeframe(self, rule: dict[str, Any]) -> dict[str, Any]:
         out = copy.deepcopy(rule)
@@ -769,7 +837,7 @@ class OpenComboGenerator:
         entry_threshold = self.random.randint(2, rule_count)
         exit_threshold = self.random.randint(1, min(3, rule_count))
         return build_combo_candidate(
-            symbols=symbols,
+            symbols=self._random_symbol_subset(symbols),
             timeframe=timeframe,
             rules=rules,
             entry_threshold=entry_threshold,
@@ -788,6 +856,9 @@ class OpenComboGenerator:
         rules = list(copy.deepcopy(p.get("rules") or []))
         if len(rules) < 2:
             return self.random_candidate(symbols=list(candidate.symbols), timeframe=candidate.timeframe)
+        symbols = normalize_symbols(candidate.symbols)
+        if self.random.random() < 0.30:
+            symbols = self._mutate_symbols(symbols)
 
         if len(rules) < int(self.max_rules) and self.random.random() < 0.22:
             existing = {str(rule.get("kind") or "") for rule in rules}
@@ -823,7 +894,7 @@ class OpenComboGenerator:
         )
         risk = dict(candidate.risk or {})
         return build_combo_candidate(
-            symbols=list(candidate.symbols),
+            symbols=symbols,
             timeframe=candidate.timeframe,
             rules=rules,
             entry_threshold=entry_threshold,
@@ -874,7 +945,7 @@ class OpenComboGenerator:
         p = source.parameters
         risk = source.risk
         child = build_combo_candidate(
-            symbols=list(left.symbols or right.symbols),
+            symbols=self._crossover_symbols(left, right),
             timeframe=left.timeframe or right.timeframe,
             rules=rules,
             entry_threshold=entry_threshold,

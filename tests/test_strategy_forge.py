@@ -16,6 +16,7 @@ from strategy_forge.combo_search import (
     candidate_rule_timeframes,
     candidate_signature,
     combo_search_score,
+    normalize_symbols,
 )
 from strategy_forge.data_loader import OHLCVData
 from strategy_forge.paper_trade_exporter import export_run, indicatorforge_rules
@@ -240,6 +241,54 @@ class StrategyForgeTests(unittest.TestCase):
         self.assertTrue(all(6 <= count <= 9 for count in counts))
         self.assertTrue(any(count > 5 for count in counts))
 
+    def test_candidate_signature_tracks_symbol_subset(self):
+        rules = [
+            {"kind": "ma_cross", "timeframe": "5m", "params": {"ma_type": "ema", "fast": 5, "slow": 20}},
+            {"kind": "rsi_momentum", "timeframe": "1h", "params": {"length": 14, "entry_min": 55, "exit_below": 40}},
+        ]
+        all_symbols = build_combo_candidate(
+            symbols=["TQQQ", "SQQQ"],
+            timeframe="5m",
+            rules=rules,
+            entry_threshold=2,
+            exit_threshold=1,
+        )
+        one_symbol = build_combo_candidate(
+            symbols=["TQQQ"],
+            timeframe="5m",
+            rules=rules,
+            entry_threshold=2,
+            exit_threshold=1,
+        )
+
+        self.assertNotEqual(candidate_signature(all_symbols), candidate_signature(one_symbol))
+
+    def test_open_combo_generator_can_mutate_ticker_subset(self):
+        generator = OpenComboGenerator(
+            seed=31,
+            min_rules=2,
+            max_rules=5,
+            timeframes=("5m", "1h"),
+            universe_symbols=("TQQQ", "SQQQ", "QLD"),
+        )
+        seed = build_combo_candidate(
+            symbols=["TQQQ", "SQQQ", "QLD"],
+            timeframe="5m",
+            rules=[
+                {"kind": "ma_cross", "timeframe": "5m", "params": {"ma_type": "ema", "fast": 5, "slow": 20}},
+                {"kind": "rsi_momentum", "timeframe": "1h", "params": {"length": 14, "entry_min": 55, "exit_below": 40}},
+            ],
+            entry_threshold=2,
+            exit_threshold=1,
+        )
+        mutations = [generator.mutate_candidate(seed) for _ in range(80)]
+
+        self.assertTrue(any(len(candidate.symbols) < 3 for candidate in mutations))
+        self.assertTrue(all(candidate.symbols for candidate in mutations))
+        self.assertTrue(
+            all(set(normalize_symbols(candidate.symbols)).issubset({"TQQQ", "SQQQ", "QLD"}) for candidate in mutations)
+        )
+
     def test_strategy_forge_catalog_covers_indicatorforge_families(self):
         self.assertTrue(
             {
@@ -328,6 +377,8 @@ class StrategyForgeTests(unittest.TestCase):
 
         aggregate = aggregate_result_metrics([result, other])
 
+        self.assertEqual(aggregate["tested_symbols"], ["TQQQ", "SQQQ"])
+        self.assertEqual(aggregate["symbol_count"], 2)
         self.assertAlmostEqual(aggregate["one_share_net_profit"], result.metrics["one_share_net_profit"] * 2.0)
         self.assertEqual(aggregate["symbol_one_share_net_profit"]["TQQQ"], result.metrics["one_share_net_profit"])
         self.assertEqual(aggregate["symbol_one_share_net_profit"]["SQQQ"], result.metrics["one_share_net_profit"])
