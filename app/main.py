@@ -249,6 +249,7 @@ ASSISTANT_MONITORS_STARTING = False
 ASSISTANT_MONITORS_LAST_ERROR: Optional[str] = None
 ASSISTANT_NEWS_JOBS: dict[str, dict[str, Any]] = {}
 ASSISTANT_NEWS_STOP_EVENTS: dict[str, threading.Event] = {}
+ASSISTANT_NEWS_THREADS: dict[str, threading.Thread] = {}
 ASSISTANT_NEWS_JOBS_LOCK = threading.Lock()
 
 SCRIPTS_DIR = APP_ROOT / "scripts"
@@ -466,6 +467,30 @@ CLEANUP_RUN_RETENTION_DAYS = int(os.getenv("CRYPTID_CLEANUP_RUN_RETENTION_DAYS",
 CLEANUP_KEEP_PER_ALGORITHM = int(os.getenv("CRYPTID_CLEANUP_KEEP_PER_ALGO", "5"))
 CLEANUP_ASSISTANT_NEWS_RETENTION_DAYS = int(os.getenv("CRYPTID_CLEANUP_ASSISTANT_NEWS_DAYS", "30"))
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
+    try:
+        value = int(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), int(value))
+    return int(value)
+
+
+SERVER_STARTED_TS = int(time.time())
+SERVER_INSTANCE_ID = f"{os.getpid()}:{SERVER_STARTED_TS}"
+AUTO_RESTART_RUNS = _env_flag("CRYPTID_AUTO_RESTART_RUNS", True)
+RUN_MAX_AUTO_RESTARTS = _env_int("CRYPTID_RUN_MAX_AUTO_RESTARTS", 3, minimum=0)
+STOP_RUNS_ON_SHUTDOWN = _env_flag("CRYPTID_STOP_RUNS_ON_SHUTDOWN", True)
+
 env = Environment(
     loader=FileSystemLoader(str(APP_ROOT / "templates")),
     autoescape=select_autoescape(["html", "xml"]),
@@ -490,6 +515,8 @@ MARKETS_OPTIMIZER_LOCK = threading.Lock()
 MARKETS_OPTIMIZER_THREAD: Optional[threading.Thread] = None
 MARKETS_OPTIMIZER_STOP_EVENT: Optional[threading.Event] = None
 MARKETS_OPTIMIZER_ACTIVE_RUN_ID: Optional[int] = None
+ALGORITHM_PROCESSES_LOCK = threading.Lock()
+ALGORITHM_PROCESSES: dict[int, subprocess.Popen[Any]] = {}
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
@@ -562,6 +589,46 @@ def _set_assistant_monitors_config_enabled(enabled: bool) -> None:
 
 def _assistant_monitors_should_run() -> bool:
     return _assistant_monitors_env_enabled() and _assistant_monitors_config_enabled()
+
+
+def _log_runtime_event(event: str, **fields: Any) -> None:
+    payload = {
+        "event": event,
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "server_instance_id": SERVER_INSTANCE_ID,
+        **fields,
+    }
+    try:
+        print("[cryptid_exchange] " + json.dumps(payload, sort_keys=True, default=str))
+    except Exception:
+        print(f"[cryptid_exchange] {event}: {fields}")
+
+
+def _startup_runtime_summary() -> dict[str, Any]:
+    return {
+        "process_role": os.getenv("CRYPTID_PROCESS_ROLE", "server"),
+        "worker_count": os.getenv("CRYPTID_SERVER_WORKERS", os.getenv("WEB_CONCURRENCY", "1")),
+        "reload": _env_flag("CRYPTID_SERVER_RELOAD", False),
+        "background_services": {
+            "assistant_monitors": _assistant_monitors_should_run(),
+            "run_auto_restart_current_server": AUTO_RESTART_RUNS,
+            "stop_runs_on_shutdown": STOP_RUNS_ON_SHUTDOWN,
+            "markets_optimizer": bool(MARKETS_OPTIMIZER_THREAD and MARKETS_OPTIMIZER_THREAD.is_alive()),
+            "assistant_news_jobs": len(ASSISTANT_NEWS_STOP_EVENTS),
+        },
+        "run_restart_policy": {
+            "current_server_only": True,
+            "max_auto_restarts": RUN_MAX_AUTO_RESTARTS,
+        },
+        "data_dir": str(DATA_DIR),
+        "runs_dir": str(RUNS_DIR),
+    }
+
+
+@app.on_event("startup")
+def _log_startup_runtime() -> None:
+    _log_runtime_event("startup", **_startup_runtime_summary())
 
 
 def _request_assistant_monitors_start() -> tuple[bool, str]:
@@ -1483,6 +1550,22 @@ def init_db() -> None:
         """
     )
     conn.commit()
+
+    try:
+        run_cols = table_columns(conn, "runs")
+        run_column_migrations = {
+            "supervisor_pid": "ALTER TABLE runs ADD COLUMN supervisor_pid INTEGER",
+            "supervisor_started_ts": "ALTER TABLE runs ADD COLUMN supervisor_started_ts INTEGER",
+            "restart_count": "ALTER TABLE runs ADD COLUMN restart_count INTEGER NOT NULL DEFAULT 0",
+            "last_restart_ts": "ALTER TABLE runs ADD COLUMN last_restart_ts INTEGER",
+            "restart_reason": "ALTER TABLE runs ADD COLUMN restart_reason TEXT",
+        }
+        for col_name, ddl in run_column_migrations.items():
+            if col_name not in run_cols:
+                cur.execute(ddl)
+        conn.commit()
+    except Exception:
+        pass
 
     # Optional migration: old algorithms schema had 'entrypoint'
     try:
@@ -15543,10 +15626,6 @@ def _pid_is_alive(pid: Optional[int]) -> bool:
     try:
         stat_parts = stat_path.read_text().split()
         if len(stat_parts) >= 3 and stat_parts[2] == "Z":
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except Exception:
-                pass
             return False
     except Exception:
         pass
@@ -15561,18 +15640,29 @@ def _pid_is_alive(pid: Optional[int]) -> bool:
     try:
         stat_parts = stat_path.read_text().split()
         if len(stat_parts) >= 3 and stat_parts[2] == "Z":
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except Exception:
-                pass
             return False
     except Exception:
         pass
     return True
 
 
+def _remember_algorithm_process(proc: subprocess.Popen[Any]) -> None:
+    try:
+        pid = int(proc.pid)
+    except Exception:
+        return
+    with ALGORITHM_PROCESSES_LOCK:
+        ALGORITHM_PROCESSES[pid] = proc
+
+
+def _forget_algorithm_process(pid: int) -> Optional[subprocess.Popen[Any]]:
+    with ALGORITHM_PROCESSES_LOCK:
+        return ALGORITHM_PROCESSES.pop(int(pid), None)
+
+
 def _terminate_pid(pid: int, *, grace_sec: float = 2.0) -> None:
     pid = int(pid)
+    tracked_proc = _forget_algorithm_process(pid)
     use_process_group = False
     child_pids: list[int] = []
     if psutil is not None:
@@ -15605,7 +15695,7 @@ def _terminate_pid(pid: int, *, grace_sec: float = 2.0) -> None:
     while time.time() < deadline:
         live_children = [child_pid for child_pid in child_pids if _pid_is_alive(child_pid)]
         if not _pid_is_alive(pid) and not live_children:
-            return
+            break
         time.sleep(0.1)
     if _pid_is_alive(pid):
         try:
@@ -15624,10 +15714,22 @@ def _terminate_pid(pid: int, *, grace_sec: float = 2.0) -> None:
                 os.kill(child_pid, signal.SIGKILL)
             except Exception:
                 pass
-    try:
-        os.waitpid(pid, os.WNOHANG)
-    except Exception:
-        pass
+    if tracked_proc is not None:
+        try:
+            tracked_proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            try:
+                tracked_proc.kill()
+                tracked_proc.wait(timeout=0.5)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    else:
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except Exception:
+            pass
 
 
 def _proc_cmdline(pid: int) -> list[str]:
@@ -15790,6 +15892,57 @@ def _run_hang_threshold_seconds(params_json: str) -> int:
     return int(threshold)
 
 
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        if hasattr(row, "keys") and key not in row.keys():
+            return default
+        value = row[key]
+    except Exception:
+        return default
+    return default if value is None else value
+
+
+def _run_owned_by_current_server(row: Any) -> bool:
+    try:
+        supervisor_pid = int(_row_get(row, "supervisor_pid", 0) or 0)
+        supervisor_started_ts = int(_row_get(row, "supervisor_started_ts", 0) or 0)
+    except Exception:
+        return False
+    return supervisor_pid == os.getpid() and supervisor_started_ts == SERVER_STARTED_TS
+
+
+def _run_restart_count(row: Any) -> int:
+    try:
+        return max(0, int(_row_get(row, "restart_count", 0) or 0))
+    except Exception:
+        return 0
+
+
+def _auto_restart_decision(row: Any, *, allow_auto_restart: bool) -> tuple[bool, str]:
+    if not allow_auto_restart:
+        return False, "passive_recovery_disabled"
+    if not AUTO_RESTART_RUNS:
+        return False, "auto_restart_disabled"
+    if not _run_owned_by_current_server(row):
+        return False, "not_owned_by_current_server"
+    if RUN_MAX_AUTO_RESTARTS >= 0 and _run_restart_count(row) >= RUN_MAX_AUTO_RESTARTS:
+        return False, "restart_limit_reached"
+    return True, "restart_allowed"
+
+
+def _mark_run_terminal_after_dead_pid(cur: sqlite3.Cursor, row: Any, *, reason: str) -> None:
+    restart_enabled = int(_row_get(row, "restart_on_crash", 0) or 0) == 1
+    status = "crashed" if restart_enabled else "exited"
+    cur.execute(
+        """
+        UPDATE runs
+        SET status=?, end_ts=?, pid=?, restart_reason=?
+        WHERE id=?
+        """,
+        (status, _utc_ts(), None, str(reason), int(row["id"])),
+    )
+
+
 def _ensure_params_file(run_dir: Path, params_json: str) -> Path:
     params_path = run_dir / "params.json"
     if params_path.exists():
@@ -15803,6 +15956,10 @@ def _ensure_params_file(run_dir: Path, params_json: str) -> Path:
 
 def _algorithm_subprocess_env(broker_hint: Optional[str]) -> dict[str, str]:
     env_map = os.environ.copy()
+    algo_thread_limit = str(os.getenv("CRYPTID_ALGO_NUM_THREADS", "") or "").strip()
+    if algo_thread_limit:
+        for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            env_map.setdefault(key, algo_thread_limit)
     if str(broker_hint or "").strip().lower() != "schwab":
         return env_map
     cfg = _schwab_config()
@@ -16308,18 +16465,32 @@ def _spawn_run_process(
         cmd.extend(["--db-path", str(DB_PATH), "--connection-id", str(connection_id)])
     log_path = run_dir / "algo.log"
     _trim_log_file(log_path)
-    log_fp = open(log_path, "ab", buffering=0)
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_fp,
-        stderr=log_fp,
-        start_new_session=(os.name != "nt"),
-        env=_algorithm_subprocess_env(broker_hint),
-    )
-    return int(proc.pid)
+    log_fp = None
+    try:
+        log_fp = open(log_path, "ab", buffering=0)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_fp,
+            stderr=log_fp,
+            start_new_session=(os.name != "nt"),
+            env=_algorithm_subprocess_env(broker_hint),
+        )
+        _remember_algorithm_process(proc)
+        return int(proc.pid)
+    finally:
+        if log_fp is not None:
+            try:
+                log_fp.close()
+            except Exception:
+                pass
 
 
-def _refresh_run_processes(conn: sqlite3.Connection, *, run_id: Optional[int] = None) -> None:
+def _refresh_run_processes(
+    conn: sqlite3.Connection,
+    *,
+    run_id: Optional[int] = None,
+    allow_auto_restart: bool = True,
+) -> None:
     cur = conn.cursor()
     if run_id is None:
         cur.execute(
@@ -16364,8 +16535,8 @@ def _refresh_run_processes(conn: sqlite3.Connection, *, run_id: Optional[int] = 
                 alive = _pid_is_alive(pid_val)
             if not alive:
                 cur.execute(
-                    "UPDATE runs SET status=?, end_ts=?, pid=? WHERE id=?",
-                    ("stopped", _utc_ts(), None, run_id_val),
+                    "UPDATE runs SET status=?, end_ts=?, pid=?, restart_reason=? WHERE id=?",
+                    ("stopped", _utc_ts(), None, "stop_requested", run_id_val),
                 )
             continue
 
@@ -16386,6 +16557,12 @@ def _refresh_run_processes(conn: sqlite3.Connection, *, run_id: Optional[int] = 
                         age = now - start_ts
                     if age is not None and age > threshold:
                         if int(r["restart_on_crash"] or 0) == 1:
+                            restart_allowed, restart_reason = _auto_restart_decision(
+                                r,
+                                allow_auto_restart=allow_auto_restart,
+                            )
+                            if not restart_allowed:
+                                continue
                             entrypoint = str(APP_ROOT / r["script_path"])
                             try:
                                 if pid_val:
@@ -16402,18 +16579,39 @@ def _refresh_run_processes(conn: sqlite3.Connection, *, run_id: Optional[int] = 
                                     connection_id=connection_id,
                                 )
                                 cur.execute(
-                                    "UPDATE runs SET pid=?, status=?, start_ts=?, end_ts=? WHERE id=?",
-                                    (new_pid, "running", _utc_ts(), None, run_id_val),
+                                    """
+                                    UPDATE runs
+                                    SET pid=?, status=?, start_ts=?, end_ts=?,
+                                        supervisor_pid=?, supervisor_started_ts=?,
+                                        restart_count=?, last_restart_ts=?, restart_reason=?
+                                    WHERE id=?
+                                    """,
+                                    (
+                                        new_pid,
+                                        "running",
+                                        _utc_ts(),
+                                        None,
+                                        os.getpid(),
+                                        SERVER_STARTED_TS,
+                                        _run_restart_count(r) + 1,
+                                        _utc_ts(),
+                                        restart_reason,
+                                        run_id_val,
+                                    ),
                                 )
                             except Exception:
-                                cur.execute(
-                                    "UPDATE runs SET status=?, end_ts=?, pid=? WHERE id=?",
-                                    ("crashed", _utc_ts(), None, run_id_val),
-                                )
+                                _mark_run_terminal_after_dead_pid(cur, r, reason="restart_failed")
                         continue
             continue
 
         if int(r["restart_on_crash"] or 0) == 1:
+            restart_allowed, restart_reason = _auto_restart_decision(
+                r,
+                allow_auto_restart=allow_auto_restart,
+            )
+            if not restart_allowed:
+                _mark_run_terminal_after_dead_pid(cur, r, reason=restart_reason)
+                continue
             entrypoint = str(APP_ROOT / r["script_path"])
             try:
                 broker_hint = _broker_hint_from_script(r["script_path"])
@@ -16428,18 +16626,32 @@ def _refresh_run_processes(conn: sqlite3.Connection, *, run_id: Optional[int] = 
                     connection_id=connection_id,
                 )
                 cur.execute(
-                    "UPDATE runs SET pid=?, status=?, start_ts=?, end_ts=? WHERE id=?",
-                    (new_pid, "running", _utc_ts(), None, run_id_val),
+                    """
+                    UPDATE runs
+                    SET pid=?, status=?, start_ts=?, end_ts=?,
+                        supervisor_pid=?, supervisor_started_ts=?,
+                        restart_count=?, last_restart_ts=?, restart_reason=?
+                    WHERE id=?
+                    """,
+                    (
+                        new_pid,
+                        "running",
+                        _utc_ts(),
+                        None,
+                        os.getpid(),
+                        SERVER_STARTED_TS,
+                        _run_restart_count(r) + 1,
+                        _utc_ts(),
+                        restart_reason,
+                        run_id_val,
+                    ),
                 )
             except Exception:
-                cur.execute(
-                    "UPDATE runs SET status=?, end_ts=?, pid=? WHERE id=?",
-                    ("crashed", _utc_ts(), None, run_id_val),
-                )
+                _mark_run_terminal_after_dead_pid(cur, r, reason="restart_failed")
         else:
             cur.execute(
-                "UPDATE runs SET status=?, end_ts=?, pid=? WHERE id=?",
-                ("exited", _utc_ts(), None, run_id_val),
+                "UPDATE runs SET status=?, end_ts=?, pid=?, restart_reason=? WHERE id=?",
+                ("exited", _utc_ts(), None, "process_exited", run_id_val),
             )
 
     conn.commit()
@@ -16451,9 +16663,118 @@ def _startup_recover_runs() -> None:
     discover_base_scripts()
     conn = db()
     try:
-        _refresh_run_processes(conn)
+        _refresh_run_processes(conn, allow_auto_restart=False)
     finally:
         conn.close()
+
+
+def _shutdown_markets_optimizer(timeout_sec: float = 5.0) -> dict[str, Any]:
+    with MARKETS_OPTIMIZER_LOCK:
+        thread = MARKETS_OPTIMIZER_THREAD
+        stop_event = MARKETS_OPTIMIZER_STOP_EVENT
+        run_id = MARKETS_OPTIMIZER_ACTIVE_RUN_ID
+    if stop_event is not None:
+        stop_event.set()
+    if run_id is not None:
+        try:
+            _markets_optimizer_mark_stop_requested(int(run_id))
+        except Exception:
+            pass
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=max(0.1, float(timeout_sec)))
+    return {
+        "active_run_id": run_id,
+        "thread_alive": bool(thread and thread.is_alive()),
+    }
+
+
+def _shutdown_assistant_news_jobs(timeout_sec: float = 5.0) -> dict[str, Any]:
+    with ASSISTANT_NEWS_JOBS_LOCK:
+        stop_events = list(ASSISTANT_NEWS_STOP_EVENTS.items())
+        threads = list(ASSISTANT_NEWS_THREADS.items())
+        for job_id, event in stop_events:
+            event.set()
+            job = ASSISTANT_NEWS_JOBS.get(job_id)
+            if isinstance(job, dict) and str(job.get("status") or "").lower() not in {"complete", "error", "stopped"}:
+                job["status"] = "stopping"
+                job["stage"] = "stopping"
+                job["message"] = "Server shutdown requested."
+                job["cancel_requested"] = True
+                job["updated_at"] = _utc_now_iso()
+
+    deadline = time.time() + max(0.1, float(timeout_sec))
+    for _job_id, thread in threads:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        if thread.is_alive():
+            thread.join(timeout=remaining)
+    return {
+        "jobs_signaled": len(stop_events),
+        "threads_alive": sum(1 for _job_id, thread in threads if thread.is_alive()),
+    }
+
+
+def _shutdown_owned_run_processes(timeout_sec: float = 2.0) -> dict[str, Any]:
+    if not STOP_RUNS_ON_SHUTDOWN:
+        return {"enabled": False, "runs_signaled": 0, "alive_after_shutdown": 0}
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, pid, run_dir
+        FROM runs
+        WHERE status IN ('running', 'stopping')
+          AND supervisor_pid=?
+          AND supervisor_started_ts=?
+        """,
+        (os.getpid(), SERVER_STARTED_TS),
+    )
+    rows = cur.fetchall()
+    ts_now = _utc_ts()
+    for row in rows:
+        cur.execute(
+            "UPDATE runs SET status=?, end_ts=?, restart_reason=? WHERE id=?",
+            ("stopping", ts_now, "server_shutdown", int(row["id"])),
+        )
+    conn.commit()
+
+    for row in rows:
+        pid = int(row["pid"]) if row["pid"] else None
+        if pid:
+            _terminate_pid(pid, grace_sec=max(0.1, float(timeout_sec)))
+
+    alive_after = 0
+    for row in rows:
+        pid = int(row["pid"]) if row["pid"] else None
+        if pid and _pid_is_alive(pid):
+            alive_after += 1
+            cur.execute(
+                "UPDATE runs SET status=?, end_ts=?, pid=?, restart_reason=? WHERE id=?",
+                ("stopping", _utc_ts(), pid, "server_shutdown_timeout", int(row["id"])),
+            )
+        else:
+            cur.execute(
+                "UPDATE runs SET status=?, end_ts=?, pid=?, restart_reason=? WHERE id=?",
+                ("stopped", _utc_ts(), None, "server_shutdown", int(row["id"])),
+            )
+    conn.commit()
+    conn.close()
+    return {"enabled": True, "runs_signaled": len(rows), "alive_after_shutdown": alive_after}
+
+
+@app.on_event("shutdown")
+def _shutdown_runtime_services() -> None:
+    markets = _shutdown_markets_optimizer()
+    assistant_news = _shutdown_assistant_news_jobs()
+    runs = _shutdown_owned_run_processes()
+    _log_runtime_event(
+        "shutdown",
+        markets_optimizer=markets,
+        assistant_news=assistant_news,
+        managed_runs=runs,
+    )
 
 
 @app.get("/runs", response_class=HTMLResponse)
@@ -16538,7 +16859,7 @@ def run_stop(run_id: int, request: Request):
 @app.post("/runs/{run_id}/rerun")
 def run_rerun(run_id: int, request: Request):
     conn = db()
-    _refresh_run_processes(conn, run_id=run_id)
+    _refresh_run_processes(conn, run_id=run_id, allow_auto_restart=False)
     cur = conn.cursor()
     cur.execute("SELECT algorithm_id, status FROM runs WHERE id=?", (run_id,))
     r = cur.fetchone()
@@ -16633,7 +16954,7 @@ def runs_stop_all(request: Request):
 @app.post("/runs/{run_id}/clear")
 def run_clear(run_id: int):
     conn = db()
-    _refresh_run_processes(conn, run_id=run_id)
+    _refresh_run_processes(conn, run_id=run_id, allow_auto_restart=False)
     cur = conn.cursor()
     cur.execute("SELECT run_dir, status, pid, params_json FROM runs WHERE id=?", (run_id,))
     r = cur.fetchone()
@@ -18414,10 +18735,24 @@ def run_algorithm(algo_id: int):
         cur.execute(
             """
             INSERT INTO runs
-            (algorithm_id, algorithm_name, params_json, run_dir, pid, status, start_ts)
-            VALUES (?,?,?,?,?,?,?)
+            (algorithm_id, algorithm_name, params_json, run_dir, pid, status, start_ts,
+             supervisor_pid, supervisor_started_ts, restart_count, last_restart_ts, restart_reason)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             """,
-            (algo_id, a["name"], params_json, str(run_dir), int(proc.pid), "running", _utc_ts()),
+            (
+                algo_id,
+                a["name"],
+                params_json,
+                str(run_dir),
+                int(proc.pid),
+                "running",
+                _utc_ts(),
+                os.getpid(),
+                SERVER_STARTED_TS,
+                0,
+                None,
+                "manual_start",
+            ),
         )
         run_id = int(cur.lastrowid)
         conn.commit()
@@ -18802,6 +19137,7 @@ def _assistant_news_cleanup_jobs() -> None:
             if stale_job.get("status") in ("complete", "error", "stopped"):
                 ASSISTANT_NEWS_JOBS.pop(stale_id, None)
                 ASSISTANT_NEWS_STOP_EVENTS.pop(stale_id, None)
+                ASSISTANT_NEWS_THREADS.pop(stale_id, None)
 
 
 def _assistant_news_worker(
@@ -18873,6 +19209,7 @@ def _assistant_news_worker(
     finally:
         with ASSISTANT_NEWS_JOBS_LOCK:
             ASSISTANT_NEWS_STOP_EVENTS.pop(job_id, None)
+            ASSISTANT_NEWS_THREADS.pop(job_id, None)
 
 
 @app.get("/assistant", response_class=HTMLResponse)
@@ -19060,11 +19397,14 @@ async def assistant_news_workflow_start(request: Request):
         name=f"assistant-news-{job_id}",
     )
     try:
+        with ASSISTANT_NEWS_JOBS_LOCK:
+            ASSISTANT_NEWS_THREADS[job_id] = thread
         thread.start()
     except Exception as e:
         _assistant_news_update_job(job_id, status="error", stage="error", message=str(e), error=str(e))
         with ASSISTANT_NEWS_JOBS_LOCK:
             ASSISTANT_NEWS_STOP_EVENTS.pop(job_id, None)
+            ASSISTANT_NEWS_THREADS.pop(job_id, None)
         return JSONResponse({"error": f"Unable to start assistant workflow: {e}"}, status_code=500)
     return JSONResponse(_assistant_news_job_snapshot(job_id))
 
@@ -20276,6 +20616,10 @@ def main():
     ap.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     ap.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     ap.add_argument("--http", action="store_true", help="Force HTTP even if CERT_FILE/KEY_FILE are set")
+    ap.add_argument("--workers", type=int, default=_env_int("CRYPTID_SERVER_WORKERS", 1, minimum=1), help="Server workers (default: 1)")
+    ap.add_argument("--reload", action="store_true", default=_env_flag("CRYPTID_SERVER_RELOAD", False), help="Enable development reload explicitly")
+    ap.add_argument("--reload-dir", action="append", default=None, help="Directory to watch when --reload is enabled")
+    ap.add_argument("--reload-exclude", action="append", default=None, help="Additional reload exclude pattern")
     args = ap.parse_args()
 
     if args.cleanup_apply and not args.cleanup_data:
@@ -20318,7 +20662,39 @@ def main():
     cert = str(os.getenv("CERT_FILE") or "").strip()
     key = str(os.getenv("KEY_FILE") or "").strip()
 
-    uvicorn_kwargs: dict[str, Any] = {"host": args.host, "port": args.port, "reload": False}
+    workers = max(1, int(args.workers or 1))
+    reload_enabled = bool(args.reload)
+    if reload_enabled and workers != 1:
+        print("[cryptid_exchange] NOTE: --reload uses one worker; ignoring --workers > 1 for this launch")
+        workers = 1
+
+    os.environ["CRYPTID_SERVER_WORKERS"] = str(workers)
+    os.environ["CRYPTID_SERVER_RELOAD"] = "1" if reload_enabled else "0"
+    os.environ.setdefault("CRYPTID_PROCESS_ROLE", "server")
+
+    reload_excludes = [
+        ".git/*",
+        ".idea/*",
+        ".venv/*",
+        "venv/*",
+        "__pycache__/*",
+        "*.py[cod]",
+        "app/data/*",
+        "app/data/**/*",
+        "*.sqlite3",
+        "*.log",
+    ]
+    reload_excludes.extend(args.reload_exclude or [])
+
+    uvicorn_kwargs: dict[str, Any] = {
+        "host": args.host,
+        "port": args.port,
+        "reload": reload_enabled,
+        "workers": workers,
+    }
+    if reload_enabled:
+        uvicorn_kwargs["reload_dirs"] = args.reload_dir or [str(APP_ROOT)]
+        uvicorn_kwargs["reload_excludes"] = reload_excludes
 
     cert_exists = bool(cert and Path(cert).expanduser().exists())
     key_exists = bool(key and Path(key).expanduser().exists())
@@ -20335,7 +20711,8 @@ def main():
             elif not cert_exists or not key_exists:
                 print("[cryptid_exchange] NOTE: CERT_FILE/KEY_FILE path missing on this machine; falling back to HTTP")
 
-    uvicorn.run(app, **uvicorn_kwargs)
+    uvicorn_target: Any = "app.main:app" if reload_enabled or workers != 1 else app
+    uvicorn.run(uvicorn_target, **uvicorn_kwargs)
 
 
 if __name__ == "__main__":

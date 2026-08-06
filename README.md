@@ -167,6 +167,26 @@ export KEY_FILE=path/to/key.pem
 
 HTTPS is optional. If `CERT_FILE`/`KEY_FILE` are blank or point to files that do not exist on the current machine, the server falls back to HTTP.
 
+## Safe Development Launch
+
+Use one worker with reload disabled by default:
+
+```bash
+./run_app.sh
+```
+
+Equivalent direct command:
+
+```bash
+python -m app.main --http --host 127.0.0.1 --port 8000 --workers 1
+```
+
+Development reload is opt-in and excludes generated runtime data:
+
+```bash
+CRYPTID_RELOAD=1 ./run_app.sh
+```
+
 ---
 
 ## 3️⃣ Initialize Database
