@@ -5559,6 +5559,28 @@ def main_trading_loop(
                 rsi = _rsi(closes, 14)
                 drsi = _rsi_derivative(closes, 14)
                 atr = _atr_from_historicals(hist, period=14)
+                pivot_preorder_target = (
+                    _pivot_preorder_target(
+                        highs,
+                        lows,
+                        closes,
+                        float(current_price),
+                        offset=float(pivot_preorder_offset),
+                        include_half_levels=bool(pivot_preorder_include_half_levels),
+                        fallback_pct=float(pivot_preorder_fallback_pct),
+                    )
+                    if bool(pivot_preorder_enabled)
+                    else None
+                )
+                pivot_preorder_target_label = pivot_preorder_target[0] if pivot_preorder_target is not None else None
+                pivot_preorder_target_price = pivot_preorder_target[1] if pivot_preorder_target is not None else None
+                pivot_preorder_margin_pct = None
+                pivot_preorder_margin_per_share = None
+                pivot_preorder_margin_total = None
+                if pivot_preorder_target_price is not None and float(current_price) > 0.0:
+                    pivot_preorder_margin_per_share = float(pivot_preorder_target_price) - float(current_price)
+                    pivot_preorder_margin_pct = (pivot_preorder_margin_per_share / float(current_price)) * 100.0
+                    pivot_preorder_margin_total = pivot_preorder_margin_per_share * float(shares_per_trade)
 
                 tickers_status.append(
                     {
@@ -5606,6 +5628,17 @@ def main_trading_loop(
                         "seamless_supported": str(symbol).strip().upper() not in _SEAMLESS_UNSUPPORTED_SYMBOLS,
                         "buy_order_type": buy_order_type,
                         "sell_order_type": sell_order_type,
+                        "pivot_preorder_enabled": bool(pivot_preorder_enabled),
+                        "pivot_preorder_offset": float(pivot_preorder_offset),
+                        "pivot_preorder_include_half_levels": bool(pivot_preorder_include_half_levels),
+                        "pivot_preorder_fallback_pct": float(pivot_preorder_fallback_pct),
+                        "pivot_preorder_target_label": pivot_preorder_target_label,
+                        "pivot_preorder_target_price": pivot_preorder_target_price,
+                        "pivot_preorder_margin_pct": pivot_preorder_margin_pct,
+                        "pivot_preorder_margin_per_share": pivot_preorder_margin_per_share,
+                        "pivot_preorder_margin_total": pivot_preorder_margin_total,
+                        "pivot_preorder_shares": float(shares_per_trade) if bool(pivot_preorder_enabled) else None,
+                        "pivot_preorder_order_status": "preview" if pivot_preorder_target is not None else ("no target" if bool(pivot_preorder_enabled) else None),
                         "ma20": ma20,
                         "ma78": ma78,
                         "ma150": ma190,
@@ -5779,19 +5812,11 @@ def main_trading_loop(
                                 avg_buy_price=0.0,
                             )
                         if resp is not None and _order_success(resp) and bool(pivot_preorder_enabled):
-                            target = _pivot_preorder_target(
-                                highs,
-                                lows,
-                                closes,
-                                float(current_price),
-                                offset=float(pivot_preorder_offset),
-                                include_half_levels=bool(pivot_preorder_include_half_levels),
-                                fallback_pct=float(pivot_preorder_fallback_pct),
-                            )
-                            if target is None:
+                            if pivot_preorder_target is None:
                                 print(f"[{symbol}] Pivot preorder skipped: no target above current price.")
+                                tickers_status[-1]["pivot_preorder_order_status"] = "no target"
                             else:
-                                target_label, target_price = target
+                                target_label, target_price = pivot_preorder_target
                                 print(
                                     f"[{symbol}] Pivot preorder -> placing limit SELL for {shares_per_trade} shares "
                                     f"at ${float(target_price):.2f} ({target_label})."
@@ -5807,8 +5832,11 @@ def main_trading_loop(
                                 )
                                 if _order_success(sell_resp):
                                     print(f"[{symbol}] Pivot preorder SELL accepted: resp={sell_resp}")
+                                    tickers_status[-1]["pivot_preorder_order_status"] = "accepted"
                                 else:
                                     print(f"[{symbol}] Pivot preorder SELL rejected: {sell_resp.text}")
+                                    tickers_status[-1]["pivot_preorder_order_status"] = "rejected"
+                                    tickers_status[-1]["pivot_preorder_order_reason"] = str(sell_resp.text or "")
                     except Exception as e:
                         print(f"[{symbol}] Buy failed: {e}")
 

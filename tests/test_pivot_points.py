@@ -117,6 +117,8 @@ class PivotPointAppIntegrationTests(unittest.TestCase):
 
         self.assertIn(">R1</text>", svg)
         self.assertIn("stroke-dasharray='6 4'", svg)
+        self.assertIn("chart-price-candles", svg)
+        self.assertIn("chart-price-line", svg)
 
     def test_indicator_factory_exposes_pivot_points(self):
         data = OHLCVData(

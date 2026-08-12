@@ -27,6 +27,10 @@
         <a class="nav-link {% if '/broker' in (path or '') %}active{% endif %}" href="/broker">Broker</a>
         <a class="nav-link {% if '/assistant' in (path or '') %}active{% endif %}" href="/assistant">Assistant</a>
       </nav>
+      <div class="chart-style-toggle" role="group" aria-label="Chart price style">
+        <button type="button" data-chart-style="line" title="Show price as a line">Line</button>
+        <button type="button" data-chart-style="candles" title="Show price as candles">Candles</button>
+      </div>
     </div>
 
     <!-- Global portfolio / broker summary bar -->
@@ -52,6 +56,38 @@
     </div>
   </footer>
 
+  <script>
+    (function () {
+      const key = "dreadfox.chartPriceStyle";
+      function normalize(value) {
+        return value === "candles" ? "candles" : "line";
+      }
+      function apply(style) {
+        const normalized = normalize(style);
+        document.body.setAttribute("data-chart-price-style", normalized);
+        document.querySelectorAll("[data-chart-style]").forEach(function (btn) {
+          btn.classList.toggle("active", btn.getAttribute("data-chart-style") === normalized);
+        });
+      }
+      function setStyle(style) {
+        const normalized = normalize(style);
+        try { localStorage.setItem(key, normalized); } catch (e) { /* ignore */ }
+        apply(normalized);
+      }
+      let initial = "line";
+      try { initial = localStorage.getItem(key) || "line"; } catch (e) { initial = "line"; }
+      apply(initial);
+      document.addEventListener("click", function (evt) {
+        const btn = evt.target && evt.target.closest ? evt.target.closest("[data-chart-style]") : null;
+        if (!btn) return;
+        evt.preventDefault();
+        setStyle(btn.getAttribute("data-chart-style") || "line");
+      });
+      document.body.addEventListener("htmx:afterSwap", function () {
+        apply(document.body.getAttribute("data-chart-price-style") || initial);
+      });
+    })();
+  </script>
   <script>
     // Small UX: on any HTMX request error, show something readable in the target
     document.body.addEventListener('htmx:responseError', function (evt) {

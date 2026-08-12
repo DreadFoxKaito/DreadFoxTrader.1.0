@@ -9728,10 +9728,14 @@ def _market_chart_svg(
 
     ha_open: list[float] = []
     ha_close: list[float] = []
+    ha_high: list[float] = []
+    ha_low: list[float] = []
     if bool(heikin_ashi_mode):
-        ho, _hh, _hl, hc = _market_heikin_ashi_series(opens_syn, highs_syn, lows_syn, closes_syn)
+        ho, hh, hl, hc = _market_heikin_ashi_series(opens_syn, highs_syn, lows_syn, closes_syn)
         if len(ho) == n and len(hc) == n:
             ha_open = [float(v) for v in ho]
+            ha_high = [float(v) for v in hh]
+            ha_low = [float(v) for v in hl]
             ha_close = [float(v) for v in hc]
 
     price_vals: list[float] = []
@@ -9786,6 +9790,54 @@ def _market_chart_svg(
     def _price_y(v: float) -> float:
         y = top_h - ((float(v) - pmin) / prng) * top_h
         return min(max(0.0, y), top_h)
+
+    def _candle_paths() -> str:
+        if n < 1 or not show_price:
+            return ""
+        candle_opens = ha_open if bool(heikin_ashi_mode) and len(ha_open) == n else opens_syn
+        candle_highs = ha_high if bool(heikin_ashi_mode) and len(ha_high) == n else highs_syn
+        candle_lows = ha_low if bool(heikin_ashi_mode) and len(ha_low) == n else lows_syn
+        candle_closes = ha_close if bool(heikin_ashi_mode) and len(ha_close) == n else closes_syn
+        if not (
+            len(candle_opens) == n
+            and len(candle_highs) == n
+            and len(candle_lows) == n
+            and len(candle_closes) == n
+        ):
+            return ""
+        slot_w = width / max(1, axis_points - 1)
+        body_w = max(1.1, min(5.5, slot_w * 0.58))
+        wick_w = "0.75" if n > 90 else "0.95"
+        parts: list[str] = ["<g class='chart-price-candles'>"]
+        for i in range(n):
+            try:
+                o = float(candle_opens[i])
+                h = float(candle_highs[i])
+                l = float(candle_lows[i])
+                c = float(candle_closes[i])
+            except Exception:
+                continue
+            if not all(math.isfinite(v) and v > 0.0 for v in (o, h, l, c)):
+                continue
+            x = (i / max(1, axis_points - 1)) * width
+            yo = _price_y(o)
+            yh = _price_y(max(h, o, c))
+            yl = _price_y(min(l, o, c))
+            yc = _price_y(c)
+            y_top = min(yo, yc)
+            body_h = max(1.0, abs(yc - yo))
+            color = "#22c55e" if c >= o else "#ef4444"
+            opacity = "0.78" if n > 120 else "0.9"
+            parts.append(
+                f"<line x1='{x:.2f}' y1='{yh:.2f}' x2='{x:.2f}' y2='{yl:.2f}' "
+                f"stroke='{color}' stroke-width='{wick_w}' opacity='{opacity}'/>"
+            )
+            parts.append(
+                f"<rect x='{(x - (body_w / 2.0)):.2f}' y='{y_top:.2f}' width='{body_w:.2f}' height='{body_h:.2f}' "
+                f"fill='{color}' stroke='{color}' stroke-width='0.55' opacity='{opacity}'/>"
+            )
+        parts.append("</g>")
+        return "".join(parts)
 
     rsi_series: Optional[list[Optional[float]]] = None
     if show_rsi:
@@ -10105,6 +10157,9 @@ def _market_chart_svg(
             )
 
     price_vals_for_path = price_series.get("price", [None] * n)
+    candle_price_paths = _candle_paths()
+    if candle_price_paths:
+        paths.append(candle_price_paths)
     if bool(heikin_ashi_mode) and len(ha_open) == n and len(ha_close) == n:
         seg_path: list[str] = []
         seg_color: Optional[str] = None
@@ -10122,7 +10177,7 @@ def _market_chart_svg(
             nonlocal seg_path, seg_color
             if seg_path and seg_color:
                 paths.append(
-                    f"<path d='{' '.join(seg_path)}' stroke='{seg_color}' stroke-width='1.9' fill='none' opacity='0.96'/>"
+                    f"<path d='{' '.join(seg_path)}' stroke='{seg_color}' stroke-width='1.9' fill='none' opacity='0.96' class='chart-price-line'/>"
                 )
             seg_path = []
             seg_color = None
@@ -10147,7 +10202,7 @@ def _market_chart_svg(
     else:
         price_path = _path(price_vals_for_path, pmin, pmax, 0.0, top_h)
         if price_path:
-            paths.append(f"<path d='{price_path}' stroke='#f8fafc' stroke-width='1.8' fill='none'/>")
+            paths.append(f"<path d='{price_path}' stroke='#f8fafc' stroke-width='1.8' fill='none' class='chart-price-line'/>")
     for idx, cfg in enumerate(supertrend_cfgs):
         points = supertrend_series_map.get(cfg, [])
         opacity = "0.96" if idx == 0 else "0.70"
@@ -17816,6 +17871,9 @@ def run_status(run_id: int):
                     return "<span class='small'>—</span>"
                 series = {
                     "price": chart.get("price"),
+                    "open": chart.get("open"),
+                    "high": chart.get("high"),
+                    "low": chart.get("low"),
                     "ma20": chart.get("ma20"),
                     "ma78": chart.get("ma78"),
                     "ma150": chart.get("ma150"),
@@ -17860,10 +17918,60 @@ def run_status(run_id: int):
                         d.append(f"{cmd}{x:.2f},{y:.2f}")
                     return " ".join(d)
 
+                def _candles() -> str:
+                    prices = series["price"]
+                    opens = series.get("open")
+                    highs = series.get("high")
+                    lows = series.get("low")
+                    if not (
+                        isinstance(prices, list)
+                        and isinstance(opens, list)
+                        and isinstance(highs, list)
+                        and isinstance(lows, list)
+                    ):
+                        return ""
+                    n = min(len(prices), len(opens), len(highs), len(lows))
+                    if n < 2:
+                        return ""
+                    slot_w = width / max(1, n - 1)
+                    body_w = max(1.0, min(4.8, slot_w * 0.56))
+                    parts: list[str] = ["<g class='chart-price-candles'>"]
+                    for i in range(n):
+                        try:
+                            o = float(opens[i])
+                            h = float(highs[i])
+                            l = float(lows[i])
+                            c = float(prices[i])
+                        except Exception:
+                            continue
+                        if not all(math.isfinite(v) and v > 0.0 for v in (o, h, l, c)):
+                            continue
+                        x = (i / max(1, n - 1)) * width
+                        yo = height - ((o - min_v) / rng) * height
+                        yh = height - ((max(h, o, c) - min_v) / rng) * height
+                        yl = height - ((min(l, o, c) - min_v) / rng) * height
+                        yc = height - ((c - min_v) / rng) * height
+                        y_top = min(yo, yc)
+                        body_h = max(1.0, abs(yc - yo))
+                        color = "#22c55e" if c >= o else "#ef4444"
+                        parts.append(
+                            f"<line x1='{x:.2f}' y1='{yh:.2f}' x2='{x:.2f}' y2='{yl:.2f}' "
+                            f"stroke='{color}' stroke-width='0.8' opacity='0.86'/>"
+                        )
+                        parts.append(
+                            f"<rect x='{(x - (body_w / 2.0)):.2f}' y='{y_top:.2f}' width='{body_w:.2f}' height='{body_h:.2f}' "
+                            f"fill='{color}' stroke='{color}' stroke-width='0.45' opacity='0.86'/>"
+                        )
+                    parts.append("</g>")
+                    return "".join(parts)
+
                 paths: list[str] = []
+                candle_markup = _candles()
+                if candle_markup:
+                    paths.append(candle_markup)
                 price_path = _path(series["price"])
                 if price_path:
-                    paths.append(f"<path class='chart-price' d='{price_path}'/>")
+                    paths.append(f"<path class='chart-price chart-price-line' d='{price_path}'/>")
                 ma20_path = _path(series["ma20"])
                 if ma20_path:
                     paths.append(f"<path class='chart-ma20' d='{ma20_path}'/>")
@@ -18589,6 +18697,24 @@ def run_status(run_id: int):
                     )
                     for row in rows
                 )
+                pivot_preorder_param_enabled = False
+                if isinstance(params_obj, dict):
+                    raw_pivot_preorder = params_obj.get("pivot_preorder_enabled")
+                    if isinstance(raw_pivot_preorder, bool):
+                        pivot_preorder_param_enabled = raw_pivot_preorder
+                    elif isinstance(raw_pivot_preorder, (int, float)):
+                        pivot_preorder_param_enabled = float(raw_pivot_preorder) != 0.0
+                    else:
+                        pivot_preorder_param_enabled = str(raw_pivot_preorder or "").strip().lower() in ("1", "true", "yes", "on", "y")
+                show_pivot_preorder_cols = pivot_preorder_param_enabled or any(
+                    isinstance(row, dict)
+                    and (
+                        bool(row.get("pivot_preorder_enabled"))
+                        or row.get("pivot_preorder_target_price") is not None
+                        or row.get("pivot_preorder_order_status") is not None
+                    )
+                    for row in rows
+                )
                 headers = [
                     "<th>Symbol</th>",
                     "<th>Avg Buy</th>",
@@ -18597,6 +18723,8 @@ def run_status(run_id: int):
                     "<th>Signal</th>",
                     "<th>Price</th>",
                 ]
+                if show_pivot_preorder_cols:
+                    headers.extend(["<th>Pivot Target</th>", "<th>Pivot Margin</th>", "<th>Pivot Order</th>"])
                 if show_cap_cols:
                     headers.extend([
                         "<th>Held %</th>",
@@ -18724,6 +18852,50 @@ def run_status(run_id: int):
                         f"<td class='{signal_class}'>{signal_html}</td>",
                         f"<td>{price_html}</td>",
                     ]
+                    if show_pivot_preorder_cols:
+                        pivot_enabled = bool(t.get("pivot_preorder_enabled"))
+                        pivot_label = str(t.get("pivot_preorder_target_label") or "").strip()
+                        pivot_price = _to_float(t.get("pivot_preorder_target_price"))
+                        pivot_margin_pct = _to_float(t.get("pivot_preorder_margin_pct"))
+                        pivot_margin_per_share = _to_float(t.get("pivot_preorder_margin_per_share"))
+                        pivot_margin_total = _to_float(t.get("pivot_preorder_margin_total"))
+                        pivot_shares = _to_float(t.get("pivot_preorder_shares"))
+                        pivot_status = str(t.get("pivot_preorder_order_status") or "").strip()
+                        pivot_reason = str(t.get("pivot_preorder_order_reason") or "").strip()
+                        if not pivot_enabled:
+                            target_cell = "Off"
+                            margin_cell = "—"
+                            order_cell = "—"
+                        elif pivot_price is None:
+                            target_cell = "No higher pivot"
+                            margin_cell = "—"
+                            order_cell = html.escape(pivot_status or "no target")
+                        else:
+                            target_title = html.escape(pivot_label or "Pivot")
+                            target_cell = f"<b>{target_title}</b><div>{_fmt_money_plain(pivot_price)}</div>"
+                            if pivot_shares is not None and pivot_shares > 0:
+                                target_cell += f"<div class='small'>{_fmt_num(pivot_shares)} sh</div>"
+                            margin_bits = []
+                            margin_bits.append(_fmt_pct(pivot_margin_pct))
+                            if pivot_margin_per_share is not None:
+                                margin_bits.append(f"{_fmt_money_plain(pivot_margin_per_share)}/sh")
+                            margin_cell = "<div>".join(html.escape(bit) for bit in margin_bits if bit and bit != "—")
+                            if margin_cell:
+                                margin_cell = margin_cell.replace("<div>", "<br>")
+                            else:
+                                margin_cell = "—"
+                            if pivot_margin_total is not None:
+                                margin_cell += f"<div class='small'>est total {html.escape(_fmt_money_plain(pivot_margin_total))}</div>"
+                            order_cls = "signal-hold"
+                            status_lower = pivot_status.lower()
+                            if status_lower == "accepted":
+                                order_cls = "signal-buy"
+                            elif status_lower == "rejected":
+                                order_cls = "signal-sell"
+                            order_cell = f"<span class='{order_cls}'>{html.escape(pivot_status or 'preview')}</span>"
+                            if pivot_reason:
+                                order_cell += f"<div class='small'>{html.escape(pivot_reason)}</div>"
+                        cells.extend([f"<td>{target_cell}</td>", f"<td>{margin_cell}</td>", f"<td>{order_cell}</td>"])
                     if show_cap_cols:
                         cap_vals = _indicatorforge_cap_values(t)
                         held_txt = _fmt_pct(cap_vals.get("held_pct"))

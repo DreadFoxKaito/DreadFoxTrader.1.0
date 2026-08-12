@@ -650,6 +650,50 @@ tbody tr:hover td {
   stroke-linejoin: round;
 }
 
+.chart-price-candles {
+  display: none;
+}
+
+body[data-chart-price-style="candles"] .chart-price-line {
+  display: none;
+}
+
+body[data-chart-price-style="candles"] .chart-price-candles {
+  display: inline;
+}
+
+body[data-chart-price-style="line"] .chart-price-line,
+body:not([data-chart-price-style]) .chart-price-line {
+  display: inline;
+}
+
+.chart-style-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 10px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.04);
+}
+
+.chart-style-toggle button {
+  min-width: 54px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.chart-style-toggle button.active {
+  background: rgba(96,165,250,0.18);
+  color: var(--text);
+}
+
 .chart-price {
   stroke: var(--text);
   stroke-width: 1.4;
