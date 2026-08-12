@@ -42,6 +42,21 @@ try:
 except Exception:  # pragma: no cover
     from app.indicator_pipeline import apply_final_candle_policy, heikin_ashi_series as shared_heikin_ashi_series, log_indicator_policy  # type: ignore
 
+try:
+    from strategy_forge.supertrend import SupertrendPoint, calculate_supertrend, segment_supertrend_runs
+except Exception:  # pragma: no cover
+    SupertrendPoint = Any  # type: ignore
+    calculate_supertrend = None  # type: ignore
+    segment_supertrend_runs = None  # type: ignore
+
+try:
+    from strategy_forge.pivot_points import calculate_pivot_points, pivot_level_sequence, pivot_target_above_price, pivot_target_below_price
+except Exception:  # pragma: no cover
+    calculate_pivot_points = None  # type: ignore
+    pivot_level_sequence = None  # type: ignore
+    pivot_target_above_price = None  # type: ignore
+    pivot_target_below_price = None  # type: ignore
+
 # =============================================================================
 # Broker registry import (robust for both "python -m app.main" and "python app/main.py")
 # =============================================================================
@@ -2596,6 +2611,36 @@ def _base_algo_form_defs() -> dict[str, dict[str, Any]]:
                     ],
                 },
                 {
+                    "key": "pivot_preorder_enabled",
+                    "label": "Place Pivot Target Sell After BUY",
+                    "type": "boolean",
+                    "default": False,
+                    "help": "After a BUY order is accepted, immediately place a one-for-one limit SELL at the selected pivot target above the current price.",
+                },
+                {
+                    "key": "pivot_preorder_offset",
+                    "label": "Pivot Target Steps Above Price",
+                    "type": "number",
+                    "default": 1,
+                    "step": "0.5",
+                    "help": "1 targets the next pivot line above price. 2 targets the second line above price. With half levels enabled, 0.5 targets the next half-pivot level.",
+                },
+                {
+                    "key": "pivot_preorder_include_half_levels",
+                    "label": "Use Half-Pivot Target Levels",
+                    "type": "boolean",
+                    "default": False,
+                    "help": "Allows midpoint targets between adjacent S/P/R pivot lines.",
+                },
+                {
+                    "key": "pivot_preorder_fallback_pct",
+                    "label": "Pivot Target Fallback %",
+                    "type": "number",
+                    "default": 0,
+                    "step": "0.01",
+                    "help": "Optional percent-above-price target when no higher pivot level is available. Use 0 to skip fallback orders.",
+                },
+                {
                     "key": "stoploss_enabled",
                     "label": "Enable Stop-Loss Logic",
                     "type": "boolean",
@@ -2886,6 +2931,36 @@ def _base_algo_form_defs() -> dict[str, dict[str, Any]]:
                         {"value": "trailing_stop", "label": "Trailing Stop"},
                         {"value": "limit_midpoint", "label": "Limit Midpoint (Bid/Ask)"},
                     ],
+                },
+                {
+                    "key": "pivot_preorder_enabled",
+                    "label": "Place Pivot Target Sell After BUY",
+                    "type": "boolean",
+                    "default": False,
+                    "help": "After a BUY order is accepted, immediately place a one-for-one limit SELL at the selected pivot target above the current price.",
+                },
+                {
+                    "key": "pivot_preorder_offset",
+                    "label": "Pivot Target Steps Above Price",
+                    "type": "number",
+                    "default": 1,
+                    "step": "0.5",
+                    "help": "1 targets the next pivot line above price. 2 targets the second line above price. With half levels enabled, 0.5 targets the next half-pivot level.",
+                },
+                {
+                    "key": "pivot_preorder_include_half_levels",
+                    "label": "Use Half-Pivot Target Levels",
+                    "type": "boolean",
+                    "default": False,
+                    "help": "Allows midpoint targets between adjacent S/P/R pivot lines.",
+                },
+                {
+                    "key": "pivot_preorder_fallback_pct",
+                    "label": "Pivot Target Fallback %",
+                    "type": "number",
+                    "default": 0,
+                    "step": "0.01",
+                    "help": "Optional percent-above-price target when no higher pivot level is available. Use 0 to skip fallback orders.",
                 },
                 {
                     "key": "stoploss_enabled",
@@ -3279,29 +3354,39 @@ def discover_base_scripts() -> None:
     conn = db()
     cur = conn.cursor()
     found: list[str] = []
+    defs_by_path = _base_algo_form_defs()
     for f in sorted(SCRIPTS_DIR.glob("*.py")):
         rel = str(f.relative_to(APP_ROOT))
         found.append(rel)
         name = _base_script_name(rel)
         desc = _base_script_description(rel)
-        cur.execute("SELECT name, description FROM base_scripts WHERE path=?", (rel,))
+        schema_text = "{}"
+        base_def = defs_by_path.get(_normalize_script_path(rel))
+        if isinstance(base_def, dict):
+            try:
+                schema_text = json.dumps(base_def)
+            except Exception:
+                schema_text = "{}"
+        else:
+            schema_path = f.with_suffix(".schema.json")
+            if schema_path.exists():
+                try:
+                    schema_text = schema_path.read_text(encoding="utf-8")
+                except Exception:
+                    schema_text = "{}"
+        cur.execute("SELECT name, description, params_schema_json FROM base_scripts WHERE path=?", (rel,))
         row = cur.fetchone()
         if row:
             current_name = str(row["name"] or "")
             current_desc = str(row["description"] or "")
+            current_schema = str(row["params_schema_json"] or "")
             if name and current_name != name:
                 cur.execute("UPDATE base_scripts SET name=? WHERE path=?", (name, rel))
             if desc and current_desc != desc:
                 cur.execute("UPDATE base_scripts SET description=? WHERE path=?", (desc, rel))
+            if schema_text and current_schema != schema_text:
+                cur.execute("UPDATE base_scripts SET params_schema_json=? WHERE path=?", (schema_text, rel))
             continue
-
-        schema_text = "{}"
-        schema_path = f.with_suffix(".schema.json")
-        if schema_path.exists():
-            try:
-                schema_text = schema_path.read_text(encoding="utf-8")
-            except Exception:
-                schema_text = "{}"
 
         cur.execute(
             "INSERT INTO base_scripts (name, path, description, params_schema_json, created_ts) VALUES (?,?,?,?,?)",
@@ -4633,13 +4718,30 @@ def _market_supertrend_series(
     atr_length: int = 10,
     multiplier: float = 3.0,
 ) -> tuple[list[Optional[float]], list[Optional[float]]]:
+    points = _market_supertrend_points(
+        closes,
+        highs=highs,
+        lows=lows,
+        atr_length=atr_length,
+        multiplier=multiplier,
+    )
+    return (
+        [p.trend if p.trend is not None else None for p in points],
+        [p.direction if p.direction is not None else None for p in points],
+    )
+
+
+def _market_supertrend_points(
+    closes: list[float],
+    *,
+    highs: Optional[list[float]] = None,
+    lows: Optional[list[float]] = None,
+    atr_length: int = 10,
+    multiplier: float = 3.0,
+) -> list[SupertrendPoint]:
     n = len(closes)
-    trend: list[Optional[float]] = [None] * n
-    direction: list[Optional[float]] = [None] * n
-    final_upper: list[Optional[float]] = [None] * n
-    final_lower: list[Optional[float]] = [None] * n
-    if n <= 0:
-        return trend, direction
+    if n <= 0 or calculate_supertrend is None:
+        return []
     try:
         close_vals = [float(v) for v in closes]
         high_vals = [
@@ -4651,35 +4753,14 @@ def _market_supertrend_series(
             for i in range(n)
         ]
     except Exception:
-        return trend, direction
-    atr_values = _market_atr_series(high_vals, low_vals, close_vals, max(1, int(atr_length)))
-    mult = max(0.1, float(multiplier))
-    for i in range(n):
-        atr_now = atr_values[i]
-        if atr_now is None:
-            continue
-        hl2 = (high_vals[i] + low_vals[i]) / 2.0
-        basic_upper = hl2 + (mult * float(atr_now))
-        basic_lower = hl2 - (mult * float(atr_now))
-        if i == 0 or final_upper[i - 1] is None or final_lower[i - 1] is None:
-            final_upper[i] = basic_upper
-            final_lower[i] = basic_lower
-            direction[i] = 1.0
-            trend[i] = final_lower[i]
-            continue
-        prev_close = close_vals[i - 1]
-        prev_upper = float(final_upper[i - 1])
-        prev_lower = float(final_lower[i - 1])
-        final_upper[i] = basic_upper if basic_upper < prev_upper or prev_close > prev_upper else prev_upper
-        final_lower[i] = basic_lower if basic_lower > prev_lower or prev_close < prev_lower else prev_lower
-        if close_vals[i] > prev_upper:
-            direction[i] = 1.0
-        elif close_vals[i] < prev_lower:
-            direction[i] = -1.0
-        else:
-            direction[i] = direction[i - 1] if direction[i - 1] is not None else 1.0
-        trend[i] = final_lower[i] if float(direction[i] or 0.0) >= 0.0 else final_upper[i]
-    return trend, direction
+        return []
+    return calculate_supertrend(
+        high_vals,
+        low_vals,
+        close_vals,
+        max(1, int(atr_length)),
+        max(0.1, float(multiplier)),
+    )
 
 
 def _supertrend_condition_hit(
@@ -5691,6 +5772,8 @@ def _rule_line_color(rule: dict[str, Any]) -> str:
         kind = "sar"
     elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
         kind = "donchian"
+    elif kind_raw in ("pivot", "pivot_points", "pivots"):
+        kind = "pivot"
     elif kind_raw in ("supertrend", "supertrend_trend"):
         kind = "supertrend"
     elif kind_raw in ("vwap", "vwap_filter"):
@@ -5728,6 +5811,8 @@ def _rule_line_color(rule: dict[str, Any]) -> str:
         return "#f43f5e"
     if kind == "donchian":
         return "#38bdf8"
+    if kind == "pivot":
+        return "#f59e0b"
     if kind == "supertrend":
         return "#22c55e"
     if kind == "vwap":
@@ -6418,6 +6503,99 @@ _DONCHIAN_CONDITION_LABELS: dict[str, str] = {
 }
 
 
+_PIVOT_CONDITION_LABELS: dict[str, str] = {
+    "hold": "Hold / Ignore Pivot Points",
+    "above_p": "Price Above Pivot",
+    "below_p": "Price Below Pivot",
+    "above_r1": "Price Above R1",
+    "below_s1": "Price Below S1",
+    "cross_above_p": "Price Crosses Above Pivot",
+    "cross_below_p": "Price Crosses Below Pivot",
+    "cross_above_r1": "Price Crosses Above R1",
+    "cross_below_s1": "Price Crosses Below S1",
+    "near_resistance": "Price Near Resistance",
+    "near_support": "Price Near Support",
+}
+
+
+def _normalize_pivot_condition(value: Any, *, default: str = "hold") -> str:
+    raw = str(value or "").strip().lower()
+    aliases: dict[str, str] = {
+        "above_pivot": "above_p",
+        "below_pivot": "below_p",
+        "pivot_cross_up": "cross_above_p",
+        "pivot_cross_down": "cross_below_p",
+        "break_r1": "cross_above_r1",
+        "break_s1": "cross_below_s1",
+        "near_r": "near_resistance",
+        "near_s": "near_support",
+    }
+    s = aliases.get(raw, raw)
+    if not s:
+        s = str(default or "hold").strip().lower()
+    if s not in _PIVOT_CONDITION_LABELS:
+        s = str(default or "hold").strip().lower()
+    if s not in _PIVOT_CONDITION_LABELS:
+        s = "hold"
+    return s
+
+
+def _pivot_condition_hit(
+    cond: str,
+    *,
+    close_now: float,
+    close_prev: Optional[float],
+    levels: Any,
+    tolerance_pct: float,
+) -> bool:
+    c = _normalize_pivot_condition(cond, default="hold")
+    if c == "hold" or levels is None:
+        return False
+    level_map = levels.as_dict()
+    tol = max(0.0, float(tolerance_pct)) / 100.0
+
+    def _above(name: str) -> bool:
+        return float(close_now) > float(level_map[name])
+
+    def _below(name: str) -> bool:
+        return float(close_now) < float(level_map[name])
+
+    def _cross_above(name: str) -> bool:
+        return close_prev is not None and float(close_prev) <= float(level_map[name]) < float(close_now)
+
+    def _cross_below(name: str) -> bool:
+        return close_prev is not None and float(close_prev) >= float(level_map[name]) > float(close_now)
+
+    def _near(names: tuple[str, ...]) -> bool:
+        for name in names:
+            level = float(level_map[name])
+            if level > 0.0 and abs(float(close_now) - level) / level <= tol:
+                return True
+        return False
+
+    if c == "above_p":
+        return _above("P")
+    if c == "below_p":
+        return _below("P")
+    if c == "above_r1":
+        return _above("R1")
+    if c == "below_s1":
+        return _below("S1")
+    if c == "cross_above_p":
+        return _cross_above("P")
+    if c == "cross_below_p":
+        return _cross_below("P")
+    if c == "cross_above_r1":
+        return _cross_above("R1")
+    if c == "cross_below_s1":
+        return _cross_below("S1")
+    if c == "near_resistance":
+        return _near(("R1", "R2", "R3"))
+    if c == "near_support":
+        return _near(("S1", "S2", "S3"))
+    return False
+
+
 def _normalize_donchian_condition(value: Any, *, default: str = "hold") -> str:
     raw = str(value or "").strip().lower()
     aliases: dict[str, str] = {
@@ -6442,13 +6620,23 @@ def _normalize_donchian_condition(value: Any, *, default: str = "hold") -> str:
 
 
 _SUPERTREND_CONDITION_LABELS: dict[str, str] = {
-    "hold": "hold",
-    "trend_up": "Supertrend direction up",
-    "trend_down": "Supertrend direction down",
-    "close_above_trend": "close above Supertrend",
-    "close_below_trend": "close below Supertrend",
-    "flip_up": "Supertrend flips up",
-    "flip_down": "Supertrend flips down",
+    "hold": "Hold / Ignore Supertrend",
+    "trend_up": "Trend Is Bullish",
+    "trend_down": "Trend Is Bearish",
+    "close_above_trend": "Price Closes Above Supertrend",
+    "close_below_trend": "Price Closes Below Supertrend",
+    "flip_up": "Trend Flips Bullish",
+    "flip_down": "Trend Flips Bearish",
+}
+
+_SUPERTREND_CONDITION_DESCRIPTIONS: dict[str, str] = {
+    "hold": "Supertrend does not create a signal for this side of the rule.",
+    "trend_up": "Persistent state: true on every candle while Supertrend is bullish and its active line is below price.",
+    "trend_down": "Persistent state: true on every candle while Supertrend is bearish and its active line is above price.",
+    "close_above_trend": "State comparison: true when the current close is above the active Supertrend line; it does not require a reversal.",
+    "close_below_trend": "State comparison: true when the current close is below the active Supertrend line; it does not require a reversal.",
+    "flip_up": "One-candle event: true only when direction changes from bearish to bullish.",
+    "flip_down": "One-candle event: true only when direction changes from bullish to bearish.",
 }
 
 
@@ -6567,6 +6755,8 @@ def _indicator_rule_summary_lines(
         kind = "sar"
     elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
         kind = "donchian"
+    elif kind_raw in ("pivot", "pivot_points", "pivots"):
+        kind = "pivot"
     elif kind_raw in ("supertrend", "supertrend_trend"):
         kind = "supertrend"
     elif kind_raw in ("vwap", "vwap_filter"):
@@ -6739,15 +6929,30 @@ def _indicator_rule_summary_lines(
         )
         return lines
 
+    if kind == "pivot":
+        buy_cond = _normalize_pivot_condition(params.get("buy_condition"), default="above_p")
+        sell_cond = _normalize_pivot_condition(params.get("sell_condition"), default="below_p")
+        tolerance_pct = max(0.0, float(_to_float_opt(params.get("tolerance_pct")) or 0.25))
+        lines.append(
+            f"Pivot Points (previous candle): "
+            f"BUY={_PIVOT_CONDITION_LABELS.get(buy_cond, buy_cond)}; "
+            f"SELL={_PIVOT_CONDITION_LABELS.get(sell_cond, sell_cond)}; "
+            f"near tolerance {tolerance_pct:g}%."
+        )
+        return lines
+
     if kind == "supertrend":
         atr_length = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
         multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
         buy_cond = _normalize_supertrend_condition(params.get("buy_condition"), default="trend_up")
         sell_cond = _normalize_supertrend_condition(params.get("sell_condition"), default="trend_down")
         lines.append(
-            f"Supertrend (ATR {atr_length}, multiplier {_rule_summary_num(multiplier, 3)}): "
+            f"ST({atr_length},{_rule_summary_num(multiplier, 3)}): "
             f"BUY={_SUPERTREND_CONDITION_LABELS.get(buy_cond, buy_cond)}; "
             f"SELL={_SUPERTREND_CONDITION_LABELS.get(sell_cond, sell_cond)}."
+        )
+        lines.append(
+            "State rules can remain true for multiple candles; flip rules are one-candle trend-change events."
         )
         return lines
 
@@ -7995,6 +8200,8 @@ def _eval_indicator_rule(
         kind = "sar"
     elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
         kind = "donchian"
+    elif kind_raw in ("pivot", "pivot_points", "pivots"):
+        kind = "pivot"
     elif kind_raw in ("supertrend", "supertrend_trend"):
         kind = "supertrend"
     elif kind_raw in ("vwap", "vwap_filter"):
@@ -8595,6 +8802,56 @@ def _eval_indicator_rule(
         out["detail"] = f"buy={buy_cond} sell={sell_cond}"
         return out
 
+    if kind == "pivot":
+        buy_cond = _normalize_pivot_condition(params.get("buy_condition"), default="above_p")
+        sell_cond = _normalize_pivot_condition(params.get("sell_condition"), default="below_p")
+        buy_ignored = buy_cond == "hold"
+        sell_ignored = sell_cond == "hold"
+        src_highs = highs if isinstance(highs, list) and len(highs) >= len(closes) else closes
+        src_lows = lows if isinstance(lows, list) and len(lows) >= len(closes) else closes
+        close_now = float(_to_float_opt(price) or closes[-1])
+        close_prev = _to_float_opt(closes[-2] if len(closes) >= 2 else None)
+        tolerance_pct = max(0.0, float(_to_float_opt(params.get("tolerance_pct")) or 0.25))
+        if calculate_pivot_points is None or len(src_highs) < 2 or len(src_lows) < 2 or len(closes) < 2:
+            out["detail"] = "Pivot Points unavailable"
+            return out
+        levels = calculate_pivot_points(src_highs, src_lows, closes, source_index=-2)
+        if levels is None:
+            out["detail"] = "Pivot Points unavailable"
+            return out
+        buy_ok = True if buy_ignored else _pivot_condition_hit(
+            buy_cond,
+            close_now=close_now,
+            close_prev=close_prev,
+            levels=levels,
+            tolerance_pct=tolerance_pct,
+        )
+        sell_ok = True if sell_ignored else _pivot_condition_hit(
+            sell_cond,
+            close_now=close_now,
+            close_prev=close_prev,
+            levels=levels,
+            tolerance_pct=tolerance_pct,
+        )
+        level_map = levels.as_dict()
+        out["buy_ok"] = bool(buy_ok)
+        out["sell_ok"] = bool(sell_ok)
+        out["buy_ignored"] = bool(buy_ignored)
+        out["sell_ignored"] = bool(sell_ignored)
+        out["value"] = (
+            f"PIV P={_fmt_market_num(level_map.get('P'),4)} "
+            f"S1={_fmt_market_num(level_map.get('S1'),4)} "
+            f"R1={_fmt_market_num(level_map.get('R1'),4)} "
+            f"Price={_fmt_market_num(close_now,4)}"
+        )
+        out["detail"] = (
+            f"source=previous candle "
+            f"buy={_PIVOT_CONDITION_LABELS.get(buy_cond, buy_cond)} "
+            f"sell={_PIVOT_CONDITION_LABELS.get(sell_cond, sell_cond)} "
+            f"near={_fmt_market_num(tolerance_pct,3)}%"
+        )
+        return out
+
     if kind == "supertrend":
         atr_length = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
         multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
@@ -8604,21 +8861,23 @@ def _eval_indicator_rule(
         sell_ignored = sell_cond == "hold"
         src_highs = highs if isinstance(highs, list) and len(highs) >= len(closes) else closes
         src_lows = lows if isinstance(lows, list) and len(lows) >= len(closes) else closes
-        trend_series, direction_series = _market_supertrend_series(
+        points = _market_supertrend_points(
             closes,
             highs=src_highs,
             lows=src_lows,
             atr_length=atr_length,
             multiplier=multiplier,
         )
-        trend_now = trend_series[-1] if trend_series else None
-        direction_now = direction_series[-1] if direction_series else None
-        trend_prev = trend_series[-2] if len(trend_series) >= 2 else None
-        direction_prev = direction_series[-2] if len(direction_series) >= 2 else None
+        point_now = points[-1] if points else None
+        point_prev = points[-2] if len(points) >= 2 else None
+        trend_now = point_now.trend if point_now else None
+        direction_now = point_now.direction if point_now else None
+        trend_prev = point_prev.trend if point_prev else None
+        direction_prev = point_prev.direction if point_prev else None
         close_now = float(_to_float_opt(price) or closes[-1])
         close_prev = _to_float_opt(closes[-2] if len(closes) >= 2 else None)
         if trend_now is None or direction_now is None:
-            out["detail"] = f"Supertrend({atr_length},{_fmt_market_num(multiplier,2)}) unavailable"
+            out["detail"] = f"ST({atr_length},{_fmt_market_num(multiplier,2)}) unavailable"
             return out
         buy_ok = True if buy_ignored else _supertrend_condition_hit(
             buy_cond,
@@ -8642,14 +8901,20 @@ def _eval_indicator_rule(
         out["sell_ok"] = bool(sell_ok)
         out["buy_ignored"] = bool(buy_ignored)
         out["sell_ignored"] = bool(sell_ignored)
-        direction_txt = "up" if float(direction_now) > 0.0 else "down"
+        direction_txt = "Up" if float(direction_now) > 0.0 else "Down"
         out["value"] = (
-            f"ST={_fmt_market_num(trend_now,4)} "
-            f"P={_fmt_market_num(close_now,4)} dir={direction_txt}"
+            f"ST({atr_length},{_fmt_market_num(multiplier,3)})={_fmt_market_num(trend_now,4)} "
+            f"Price={_fmt_market_num(close_now,4)} Direction={direction_txt}"
         )
+        atr_txt = _fmt_market_num(point_now.atr if point_now else None, 4)
+        upper_txt = _fmt_market_num(point_now.final_upper if point_now else None, 4)
+        lower_txt = _fmt_market_num(point_now.final_lower if point_now else None, 4)
+        prev_dir_txt = "Up" if direction_prev is not None and float(direction_prev) > 0.0 else ("Down" if direction_prev is not None else "—")
         out["detail"] = (
-            f"ATR={atr_length} mult={_fmt_market_num(multiplier,2)} "
-            f"buy={buy_cond} sell={sell_cond} prev_dir={_fmt_market_num(direction_prev,0)}"
+            f"Period={atr_length} Factor={_fmt_market_num(multiplier,3)} ATR={atr_txt} "
+            f"Final Upper={upper_txt} Final Lower={lower_txt} Previous Direction={prev_dir_txt} "
+            f"buy={_SUPERTREND_CONDITION_LABELS.get(buy_cond, buy_cond)} "
+            f"sell={_SUPERTREND_CONDITION_LABELS.get(sell_cond, sell_cond)}"
         )
         return out
 
@@ -9264,6 +9529,8 @@ def _market_chart_svg(
     timestamps: Optional[list[str]] = None,
     donchian_lookbacks: Optional[list[int]] = None,
     supertrend_configs: Optional[list[tuple[int, float]]] = None,
+    pivot_enabled: bool = False,
+    pivot_include_half_levels: bool = False,
     vwap_enabled: bool = False,
     rvol_lengths: Optional[list[int]] = None,
 ) -> str:
@@ -9428,15 +9695,25 @@ def _market_chart_svg(
             if isinstance(cfg, (list, tuple)) and len(cfg) >= 2
         )
     )
-    supertrend_series_map: dict[tuple[int, float], tuple[list[Optional[float]], list[Optional[float]]]] = {}
+    supertrend_series_map: dict[tuple[int, float], list[SupertrendPoint]] = {}
     for cfg in supertrend_cfgs:
-        supertrend_series_map[cfg] = _market_supertrend_series(
+        supertrend_series_map[cfg] = _market_supertrend_points(
             data,
             highs=highs_syn,
             lows=lows_syn,
             atr_length=cfg[0],
             multiplier=cfg[1],
         )
+    pivot_levels = (
+        calculate_pivot_points(highs_syn, lows_syn, closes_syn, source_index=-2)
+        if bool(pivot_enabled) and calculate_pivot_points is not None and len(closes_syn) >= 2
+        else None
+    )
+    pivot_level_pairs = (
+        pivot_level_sequence(pivot_levels, include_half_levels=bool(pivot_include_half_levels))
+        if pivot_levels is not None and pivot_level_sequence is not None
+        else []
+    )
     vwap_series = (
         _market_vwap_series(data, highs=highs_syn, lows=lows_syn, volumes=vol_data, timestamps=ts_data)
         if bool(vwap_enabled)
@@ -9487,10 +9764,13 @@ def _market_chart_svg(
             for v in vals:
                 if isinstance(v, (int, float)):
                     price_vals.append(float(v))
-    for trend_vals, _direction_vals in supertrend_series_map.values():
-        for v in trend_vals:
-            if isinstance(v, (int, float)):
-                price_vals.append(float(v))
+    for points in supertrend_series_map.values():
+        for point in points:
+            if point.trend is not None:
+                price_vals.append(float(point.trend))
+    for _name, value in pivot_level_pairs:
+        if isinstance(value, (int, float)):
+            price_vals.append(float(value))
     for v in vwap_series:
         if isinstance(v, (int, float)):
             price_vals.append(float(v))
@@ -9869,27 +10149,87 @@ def _market_chart_svg(
         if price_path:
             paths.append(f"<path d='{price_path}' stroke='#f8fafc' stroke-width='1.8' fill='none'/>")
     for idx, cfg in enumerate(supertrend_cfgs):
-        trend_vals, direction_vals = supertrend_series_map.get(cfg, ([None] * n, [None] * n))
-        up_seg: list[str] = []
-        down_seg: list[str] = []
-        for i, raw_v in enumerate(trend_vals):
-            if not isinstance(raw_v, (int, float)):
-                continue
-            x = (i / max(1, axis_points - 1)) * width
-            y = _price_y(float(raw_v))
-            d = direction_vals[i] if i < len(direction_vals) else None
-            target = up_seg if isinstance(d, (int, float)) and float(d) >= 0.0 else down_seg
-            target.append(("M" if not target else "L") + f"{x:.2f},{y:.2f}")
+        points = supertrend_series_map.get(cfg, [])
         opacity = "0.96" if idx == 0 else "0.70"
         dash = "" if idx == 0 else " stroke-dasharray='3 2'"
-        if up_seg:
+        segments = segment_supertrend_runs(points) if segment_supertrend_runs is not None else []
+        for direction, start, end in segments:
+            seg: list[str] = []
+            for i in range(start, end + 1):
+                if i >= len(points):
+                    continue
+                raw_v = points[i].trend
+                if raw_v is None:
+                    continue
+                x = (i / max(1, axis_points - 1)) * width
+                y = _price_y(float(raw_v))
+                seg.append(("M" if not seg else "L") + f"{x:.2f},{y:.2f}")
+            if not seg:
+                continue
+            color = "#22c55e" if direction >= 0.0 else "#ef4444"
             paths.append(
-                f"<path d='{' '.join(up_seg)}' stroke='#22c55e' stroke-width='1.35' fill='none' opacity='{opacity}'{dash}/>"
+                f"<path d='{' '.join(seg)}' stroke='{color}' stroke-width='1.35' fill='none' opacity='{opacity}'{dash}/>"
             )
-        if down_seg:
+        for i, point in enumerate(points):
+            if point.trend is None or (not point.flip_up and not point.flip_down):
+                continue
+            x = (i / max(1, axis_points - 1)) * width
+            stem = 30.0 if display_height <= 200 else 24.0
+            head = 10.0 if display_height <= 200 else 8.0
+            half = 8.0 if display_height <= 200 else 6.6
+            stroke_w = 3.0 if display_height <= 200 else 2.4
+            outline_w = stroke_w + 2.4
+            trend_y = _price_y(float(point.trend))
+            if point.flip_up:
+                y_tip = max(3.0, min(top_h - 3.0, trend_y))
+                y_tail = min(top_h - 3.0, y_tip + stem)
+                y_head_base = min(top_h - 3.0, y_tip + head)
+                marker = (
+                    f"<g opacity='{opacity}'>"
+                    f"<line x1='{x:.2f}' y1='{y_tail:.2f}' x2='{x:.2f}' y2='{y_tip:.2f}' "
+                    f"stroke='#0f172a' stroke-width='{outline_w:.2f}' stroke-linecap='round'/>"
+                    f"<line x1='{x:.2f}' y1='{y_tail:.2f}' x2='{x:.2f}' y2='{y_tip:.2f}' "
+                    f"stroke='#22c55e' stroke-width='{stroke_w:.2f}' stroke-linecap='round'/>"
+                    f"<path d='M{x:.2f},{y_tip:.2f} L{x - half:.2f},{y_head_base:.2f} "
+                    f"L{x + half:.2f},{y_head_base:.2f} Z' fill='#22c55e' "
+                    f"stroke='#0f172a' stroke-width='1.2'/>"
+                    f"</g>"
+                )
+            else:
+                y_tip = max(3.0, min(top_h - 3.0, trend_y))
+                y_tail = max(3.0, y_tip - stem)
+                y_head_base = max(3.0, y_tip - head)
+                marker = (
+                    f"<g opacity='{opacity}'>"
+                    f"<line x1='{x:.2f}' y1='{y_tail:.2f}' x2='{x:.2f}' y2='{y_tip:.2f}' "
+                    f"stroke='#0f172a' stroke-width='{outline_w:.2f}' stroke-linecap='round'/>"
+                    f"<line x1='{x:.2f}' y1='{y_tail:.2f}' x2='{x:.2f}' y2='{y_tip:.2f}' "
+                    f"stroke='#ef4444' stroke-width='{stroke_w:.2f}' stroke-linecap='round'/>"
+                    f"<path d='M{x:.2f},{y_tip:.2f} L{x - half:.2f},{y_head_base:.2f} "
+                    f"L{x + half:.2f},{y_head_base:.2f} Z' fill='#ef4444' "
+                    f"stroke='#0f172a' stroke-width='1.2'/>"
+                    f"</g>"
+                )
+            marker_fg.append(marker)
+    if pivot_level_pairs:
+        for name, value in pivot_level_pairs:
+            if not isinstance(value, (int, float)):
+                continue
+            y = _price_y(float(value))
+            major = "/" not in str(name)
+            color = "#f59e0b" if str(name).startswith("R") else ("#22c55e" if str(name).startswith("S") else "#facc15")
+            opacity = "0.72" if major else "0.42"
+            dash = "6 4" if major else "2 5"
+            sw = "0.95" if major else "0.7"
             paths.append(
-                f"<path d='{' '.join(down_seg)}' stroke='#ef4444' stroke-width='1.35' fill='none' opacity='{opacity}'{dash}/>"
+                f"<line x1='0' y1='{y:.2f}' x2='{width:.1f}' y2='{y:.2f}' "
+                f"stroke='{color}' stroke-width='{sw}' stroke-dasharray='{dash}' opacity='{opacity}'/>"
             )
+            if major:
+                paths.append(
+                    f"<text x='4' y='{max(10.0, y - 3.0):.2f}' fill='{color}' font-size='9' "
+                    f"font-family='system-ui, sans-serif' opacity='0.9'>{html.escape(str(name))}</text>"
+                )
     if vwap_series:
         vwap_path = _path(vwap_series, pmin, pmax, 0.0, top_h)
         if vwap_path:
@@ -10077,6 +10417,8 @@ def _render_markets_indicators_html(
     has_drsi = bool(chart_cfg["has_drsi"])
     has_heikin_ashi = bool(chart_cfg["has_heikin_ashi"])
     has_vwap = bool(chart_cfg.get("has_vwap"))
+    has_pivot = bool(chart_cfg.get("has_pivot"))
+    pivot_include_half_levels = bool(chart_cfg.get("pivot_include_half_levels"))
     min_required = int(chart_cfg["min_required"])
     rule_columns = _indicator_runtime_rule_entries(rules)
 
@@ -10152,6 +10494,8 @@ def _render_markets_indicators_html(
             timestamps=timestamps,
             donchian_lookbacks=donchian_lookbacks,
             supertrend_configs=supertrend_configs,
+            pivot_enabled=has_pivot,
+            pivot_include_half_levels=pivot_include_half_levels,
             vwap_enabled=has_vwap,
             rvol_lengths=rvol_lengths,
         )
@@ -10218,6 +10562,8 @@ def _normalize_indicator_rules_payload(raw: Any, *, default_timeframe: str = "")
             kind = "sar"
         elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
             kind = "donchian"
+        elif kind_raw in ("pivot", "pivot_points", "pivots"):
+            kind = "pivot"
         elif kind_raw in ("supertrend", "supertrend_trend"):
             kind = "supertrend"
         elif kind_raw in ("vwap", "vwap_filter"):
@@ -10239,6 +10585,7 @@ def _normalize_indicator_rules_payload(raw: Any, *, default_timeframe: str = "")
             "roc",
             "sar",
             "donchian",
+            "pivot",
             "supertrend",
             "vwap",
             "relative_volume",
@@ -10277,6 +10624,8 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
     has_drsi = False
     has_heikin_ashi = False
     has_vwap = False
+    has_pivot = False
+    pivot_include_half_levels = False
     longest_bb = 0
     longest_ichimoku = 0
     longest_ttm = 0
@@ -10310,6 +10659,8 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
             kind = "sar"
         elif kind_raw in ("donchian", "donchian_breakout", "donchian_channel", "donchian_channels"):
             kind = "donchian"
+        elif kind_raw in ("pivot", "pivot_points", "pivots"):
+            kind = "pivot"
         elif kind_raw in ("supertrend", "supertrend_trend"):
             kind = "supertrend"
         elif kind_raw in ("vwap", "vwap_filter"):
@@ -10389,6 +10740,9 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
             lookback = max(1, int(_to_int_opt(params.get("lookback")) or 20))
             donchian_lookbacks.append(lookback)
             longest_donchian = max(longest_donchian, lookback + 1)
+        elif kind == "pivot":
+            has_pivot = True
+            pivot_include_half_levels = pivot_include_half_levels or _flag(params.get("include_half_levels"))
         elif kind == "supertrend":
             atr_length = max(1, int(_to_int_opt(params.get("atr_length")) or 10))
             multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
@@ -10443,6 +10797,8 @@ def _indicator_rules_chart_config(rules: list[dict[str, Any]]) -> dict[str, Any]
         "has_drsi": has_drsi,
         "has_heikin_ashi": has_heikin_ashi,
         "has_vwap": has_vwap,
+        "has_pivot": has_pivot,
+        "pivot_include_half_levels": pivot_include_half_levels,
         "min_required": min_required,
     }
 
@@ -10624,6 +10980,8 @@ def _render_indicatorforge_preview_html(
                 timestamps=tf_timestamps,
                 donchian_lookbacks=cfg.get("donchian_lookbacks") or [],
                 supertrend_configs=cfg.get("supertrend_configs") or [],
+                pivot_enabled=bool(cfg.get("has_pivot")),
+                pivot_include_half_levels=bool(cfg.get("pivot_include_half_levels")),
                 vwap_enabled=bool(cfg.get("has_vwap")),
                 rvol_lengths=cfg.get("rvol_lengths") or [],
             )
@@ -11969,7 +12327,11 @@ def _render_indicator_rules_html() -> str:
             multiplier = max(0.1, float(_to_float_opt(params.get("multiplier")) or 3.0))
             buy_cond = _normalize_supertrend_condition(params.get("buy_condition"), default="trend_up")
             sell_cond = _normalize_supertrend_condition(params.get("sell_condition"), default="trend_down")
-            cfg = f"atr={atr_length} mult={_fmt_market_num(multiplier,3)} buy={buy_cond} sell={sell_cond}"
+            cfg = (
+                f"ST({atr_length},{_fmt_market_num(multiplier,3)}) | "
+                f"Buy: {_SUPERTREND_CONDITION_LABELS.get(buy_cond, buy_cond)} | "
+                f"Sell: {_SUPERTREND_CONDITION_LABELS.get(sell_cond, sell_cond)}"
+            )
         elif kind == "vwap":
             buy_cond = _normalize_vwap_condition(params.get("buy_condition"), default="within_band")
             sell_cond = _normalize_vwap_condition(params.get("sell_condition"), default="exit_below")
@@ -13921,6 +14283,14 @@ async def markets_rules_add(request: Request):
             ),
         }
         _save_rule(name or "Donchian Breakout", "donchian", params)
+    elif k in ("pivot", "pivot_points", "pivots"):
+        params = {
+            "buy_condition": _normalize_pivot_condition(form.get("pivot_buy_condition"), default="above_p"),
+            "sell_condition": _normalize_pivot_condition(form.get("pivot_sell_condition"), default="below_p"),
+            "tolerance_pct": max(0.0, float(_to_float_opt(form.get("pivot_tolerance_pct")) or 0.25)),
+            "include_half_levels": _to_bool(form.get("pivot_include_half_levels"), False),
+        }
+        _save_rule(name or "Pivot Points", "pivot", params)
     elif k in ("supertrend", "supertrend_trend"):
         params = {
             "atr_length": max(1, int(_to_int_opt(form.get("supertrend_atr_length")) or 10)),
@@ -17969,6 +18339,8 @@ def run_status(run_id: int):
                         timestamps=chart_timestamps_arg,
                         donchian_lookbacks=runtime_chart_cfg.get("donchian_lookbacks") or [],
                         supertrend_configs=runtime_chart_cfg.get("supertrend_configs") or [],
+                        pivot_enabled=bool(runtime_chart_cfg.get("has_pivot")),
+                        pivot_include_half_levels=bool(runtime_chart_cfg.get("pivot_include_half_levels")),
                         vwap_enabled=bool(runtime_chart_cfg.get("has_vwap")),
                         rvol_lengths=runtime_chart_cfg.get("rvol_lengths") or [],
                     )

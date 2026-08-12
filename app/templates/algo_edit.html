@@ -393,6 +393,10 @@
     const trailAtrMultInput = getInput("trailing_stop_atr_mult");
     const buyOrderTypeInput = getInput("buy_order_type");
     const sellOrderTypeInput = getInput("sell_order_type");
+    const pivotPreorderEnabledInput = getInput("pivot_preorder_enabled");
+    const pivotPreorderOffsetInput = getInput("pivot_preorder_offset");
+    const pivotPreorderHalfInput = getInput("pivot_preorder_include_half_levels");
+    const pivotPreorderFallbackInput = getInput("pivot_preorder_fallback_pct");
     const stoplossEnabledInput = getInput("stoploss_enabled");
     const allowExtendedHoursInput = getInput("allow_extended_hours_orders");
     const includeExtendedHoursDataInput = getInput("include_extended_hours_data");
@@ -666,22 +670,81 @@
             </div>
           </div>
           <div class="card" style="padding:10px;">
+            <div class="small"><b>Add Pivot Points Rule</b></div>
+            <div class="row" style="margin-top:8px;">
+              <input id="if_pivot_name" placeholder="Name (optional)" style="width:100%;" />
+              <select id="if_pivot_buy_cond">
+                <optgroup label="Price State">
+                  <option value="above_p" selected>BUY: Price Above Pivot</option>
+                  <option value="above_r1">BUY: Price Above R1</option>
+                </optgroup>
+                <optgroup label="Cross Events">
+                  <option value="cross_above_p">BUY: Price Crosses Above Pivot</option>
+                  <option value="cross_above_r1">BUY: Price Crosses Above R1</option>
+                </optgroup>
+                <optgroup label="Support / Resistance">
+                  <option value="near_support">BUY: Price Near Support</option>
+                </optgroup>
+                <optgroup label="Disabled">
+                  <option value="hold">BUY: Hold / Ignore Pivot Points</option>
+                </optgroup>
+              </select>
+              <select id="if_pivot_sell_cond">
+                <optgroup label="Price State">
+                  <option value="below_p" selected>SELL: Price Below Pivot</option>
+                  <option value="below_s1">SELL: Price Below S1</option>
+                </optgroup>
+                <optgroup label="Cross Events">
+                  <option value="cross_below_p">SELL: Price Crosses Below Pivot</option>
+                  <option value="cross_below_s1">SELL: Price Crosses Below S1</option>
+                </optgroup>
+                <optgroup label="Support / Resistance">
+                  <option value="near_resistance">SELL: Price Near Resistance</option>
+                </optgroup>
+                <optgroup label="Disabled">
+                  <option value="hold">SELL: Hold / Ignore Pivot Points</option>
+                </optgroup>
+              </select>
+              <input id="if_pivot_tolerance" type="number" min="0" step="0.01" value="0.25" placeholder="Near %" title="Near support/resistance tolerance as a percent of price." style="width:110px;" />
+              <label class="small"><input id="if_pivot_half_levels" type="checkbox" /> show half-pivot levels</label>
+              <div class="small">Classic pivot points use the previous completed candle to calculate S3, S2, S1, P, R1, R2, and R3. State rules can stay true across candles; cross rules trigger only when price crosses the selected level.</div>
+              <div id="if_pivot_summary" class="small" style="width:100%;"></div>
+              <button type="button" class="btn primary" id="if_add_pivot">Save Pivot Rule</button>
+            </div>
+          </div>
+          <div class="card" style="padding:10px;">
             <div class="small"><b>Add Supertrend Rule</b></div>
             <div class="row" style="margin-top:8px;">
               <input id="if_supertrend_name" placeholder="Name (optional)" style="width:100%;" />
-              <input id="if_supertrend_atr_len" type="number" min="1" step="1" value="10" placeholder="ATR length" style="width:120px;" />
-              <input id="if_supertrend_mult" type="number" min="0.1" step="0.1" value="3.0" placeholder="Multiplier" style="width:120px;" />
+              <input id="if_supertrend_atr_len" type="number" min="1" step="1" value="10" placeholder="Period" title="Period: number of candles used to calculate Wilder ATR." style="width:120px;" />
+              <input id="if_supertrend_mult" type="number" min="0.1" step="0.1" value="3.0" placeholder="Factor" title="Factor: ATR multiplier. Higher is wider and less sensitive; lower is tighter and more sensitive." style="width:120px;" />
               <select id="if_supertrend_buy_cond">
-                <option value="trend_up" selected>BUY: trend up</option>
-                <option value="close_above_trend">BUY: close above trend</option>
-                <option value="flip_up">BUY: flip up</option>
-                <option value="hold">BUY: hold</option>
+                <optgroup label="Trend State">
+                  <option value="trend_up" selected title="Persistent state: true for every candle while Supertrend is bullish and the active line is below price.">BUY: Trend Is Bullish</option>
+                </optgroup>
+                <optgroup label="Price Relative to Supertrend">
+                  <option value="close_above_trend" title="True when the current close is above the active Supertrend line; does not require a reversal.">BUY: Price Closes Above Supertrend</option>
+                </optgroup>
+                <optgroup label="Trend Reversal">
+                  <option value="flip_up" title="One-candle event: true only when Supertrend changes from bearish to bullish.">BUY: Trend Flips Bullish</option>
+                </optgroup>
+                <optgroup label="Disabled">
+                  <option value="hold" title="Supertrend does not create a buy signal.">BUY: Hold / Ignore Supertrend</option>
+                </optgroup>
               </select>
               <select id="if_supertrend_sell_cond">
-                <option value="trend_down" selected>SELL: trend down</option>
-                <option value="close_below_trend">SELL: close below trend</option>
-                <option value="flip_down">SELL: flip down</option>
-                <option value="hold">SELL: hold</option>
+                <optgroup label="Trend State">
+                  <option value="trend_down" selected title="Persistent state: true for every candle while Supertrend is bearish and the active line is above price.">SELL: Trend Is Bearish</option>
+                </optgroup>
+                <optgroup label="Price Relative to Supertrend">
+                  <option value="close_below_trend" title="True when the current close is below the active Supertrend line; does not require a reversal.">SELL: Price Closes Below Supertrend</option>
+                </optgroup>
+                <optgroup label="Trend Reversal">
+                  <option value="flip_down" title="One-candle event: true only when Supertrend changes from bullish to bearish.">SELL: Trend Flips Bearish</option>
+                </optgroup>
+                <optgroup label="Disabled">
+                  <option value="hold" title="Supertrend does not create a sell signal.">SELL: Hold / Ignore Supertrend</option>
+                </optgroup>
               </select>
               <div id="if_supertrend_summary" class="small" style="width:100%;"></div>
               <button type="button" class="btn primary" id="if_add_supertrend">Save Supertrend Rule</button>
@@ -1067,6 +1130,18 @@
             <div id="if_exec_trail_mult_wrap"><label>ATR Multiplier</label><input id="if_exec_trail_mult" type="number" step="0.1" /></div>
           </div>
         </div>
+
+        ${pivotPreorderEnabledInput ? `
+        <div style="margin-top:16px;">
+          <h4 style="margin:0 0 8px 0; font-size:0.95em; color:#666;">Pivot Preorder Targets</h4>
+          <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px;">
+            <div><label><input id="if_exec_pivot_preorder_enabled" type="checkbox" /> Place Limit SELL At Pivot After BUY</label><div class="small">After a BUY order is accepted, place a matching limit SELL at a pivot level above current price.</div></div>
+            <div id="if_exec_pivot_offset_wrap"><label>Pivot Steps Above Price</label><input id="if_exec_pivot_offset" type="number" min="0.5" step="0.5" /></div>
+            <div id="if_exec_pivot_half_wrap"><label><input id="if_exec_pivot_half" type="checkbox" /> Use Half-Pivot Levels</label><div class="small">Adds midpoint targets between S/P/R levels.</div></div>
+            <div id="if_exec_pivot_fallback_wrap"><label>Fallback % Above Price</label><input id="if_exec_pivot_fallback" type="number" min="0" step="0.01" /><div class="small">0 skips fallback if no higher pivot exists.</div></div>
+          </div>
+        </div>
+        ` : ""}
 
         <!-- Stop-Loss Configuration -->
         <div style="margin-top:16px;">
@@ -1824,16 +1899,34 @@
       return map[c] || c || "hold";
     }
 
+    function pivotCondTxt(cond) {
+      const c = String(cond || "hold").trim().toLowerCase();
+      const map = {
+        hold: "Hold / Ignore Pivot Points",
+        above_p: "Price Above Pivot",
+        below_p: "Price Below Pivot",
+        above_r1: "Price Above R1",
+        below_s1: "Price Below S1",
+        cross_above_p: "Price Crosses Above Pivot",
+        cross_below_p: "Price Crosses Below Pivot",
+        cross_above_r1: "Price Crosses Above R1",
+        cross_below_s1: "Price Crosses Below S1",
+        near_resistance: "Price Near Resistance",
+        near_support: "Price Near Support"
+      };
+      return map[c] || c || "hold";
+    }
+
     function supertrendCondTxt(cond) {
       const c = String(cond || "hold").trim().toLowerCase();
       const map = {
-        hold: "hold",
-        trend_up: "Supertrend direction up",
-        trend_down: "Supertrend direction down",
-        close_above_trend: "close above Supertrend",
-        close_below_trend: "close below Supertrend",
-        flip_up: "Supertrend flips up",
-        flip_down: "Supertrend flips down"
+        hold: "Hold / Ignore Supertrend",
+        trend_up: "Trend Is Bullish",
+        trend_down: "Trend Is Bearish",
+        close_above_trend: "Price Closes Above Supertrend",
+        close_below_trend: "Price Closes Below Supertrend",
+        flip_up: "Trend Flips Bullish",
+        flip_down: "Trend Flips Bearish"
       };
       return map[c] || c || "hold";
     }
@@ -2063,6 +2156,19 @@
         `Settings: ${lookback} prior bars.`;
     }
 
+    function syncPivotSummary() {
+      const host = b.querySelector("#if_pivot_summary");
+      const buyCond = b.querySelector("#if_pivot_buy_cond");
+      const sellCond = b.querySelector("#if_pivot_sell_cond");
+      if (!host || !buyCond || !sellCond) return;
+      const tol = Math.max(0, asNumber(b.querySelector("#if_pivot_tolerance")?.value) ?? 0.25);
+      const half = !!b.querySelector("#if_pivot_half_levels")?.checked;
+      host.innerHTML =
+        `<b>BUY:</b> ${pivotCondTxt(buyCond.value)}<br>` +
+        `<b>SELL:</b> ${pivotCondTxt(sellCond.value)}<br>` +
+        `Settings: previous-candle classic pivots, near tolerance ${fmtRuleNum(tol, 3)}%, half levels ${half ? "shown" : "hidden"}.`;
+    }
+
     function syncSupertrendSummary() {
       const host = b.querySelector("#if_supertrend_summary");
       const buyCond = b.querySelector("#if_supertrend_buy_cond");
@@ -2073,7 +2179,9 @@
       host.innerHTML =
         `<b>BUY:</b> ${supertrendCondTxt(buyCond.value)}<br>` +
         `<b>SELL:</b> ${supertrendCondTxt(sellCond.value)}<br>` +
-        `Settings: ATR ${atrLen}, multiplier ${fmtRuleNum(mult, 3)}.`;
+        `Settings: ST(${atrLen},${fmtRuleNum(mult, 3)}) using Period ${atrLen} and Factor ${fmtRuleNum(mult, 3)}.<br>` +
+        `Trend Is Bullish/Bearish is a persistent state. Trend Flips Bullish/Bearish is a one-candle reversal event.<br>` +
+        `Longer Period is smoother and slower; shorter Period responds faster. Higher Factor is wider with fewer flips; lower Factor is tighter with more flips.`;
     }
 
     function syncVwapSummary() {
@@ -2291,13 +2399,20 @@
         const buyCond = donchianCondTxt(p.buy_condition || (p.use_high_break ? "high_above_upper" : "close_above_upper"));
         const sellCond = donchianCondTxt(p.sell_condition || "close_below_lower");
         lines.push(`Donchian (${lookback} prior bars): BUY=${buyCond}; SELL=${sellCond}.`);
+      } else if (kind === "pivot" || kind === "pivot_points" || kind === "pivots") {
+        const buyCond = pivotCondTxt(p.buy_condition || "above_p");
+        const sellCond = pivotCondTxt(p.sell_condition || "below_p");
+        const tol = Math.max(0, asNumber(p.tolerance_pct) ?? 0.25);
+        lines.push(`Pivot Points: Buy: ${buyCond} | Sell: ${sellCond}.`);
+        lines.push(`Uses previous completed candle; near tolerance ${fmtRuleNum(tol, 3)}%.`);
       } else if (kind === "supertrend" || kind === "supertrend_trend") {
         const atrLen = Math.max(1, parseInt(String(p.atr_length || "10"), 10) || 10);
         const multRaw = asNumber(p.multiplier);
         const mult = multRaw === null ? 3.0 : Math.max(0.1, multRaw);
         const buyCond = supertrendCondTxt(p.buy_condition || "trend_up");
         const sellCond = supertrendCondTxt(p.sell_condition || "trend_down");
-        lines.push(`Supertrend (ATR ${atrLen}, multiplier ${fmtRuleNum(mult, 3)}): BUY=${buyCond}; SELL=${sellCond}.`);
+        lines.push(`ST(${atrLen},${fmtRuleNum(mult, 3)}) | Buy: ${buyCond} | Sell: ${sellCond}.`);
+        lines.push("State conditions can remain true for multiple candles; flip conditions trigger only when direction changes.");
       } else if (kind === "vwap" || kind === "vwap_filter") {
         const buyCond = vwapCondTxt(p.buy_condition || "within_band");
         const sellCond = vwapCondTxt(p.sell_condition || "exit_below");
@@ -2752,6 +2867,21 @@
       });
     });
 
+    b.querySelector("#if_add_pivot").addEventListener("click", () => {
+      const nameRaw = (b.querySelector("#if_pivot_name").value || "").trim();
+      const tolRaw = parseFloat(b.querySelector("#if_pivot_tolerance").value || "0.25");
+      addRule({
+        name: nameRaw || "Pivot Points",
+        kind: "pivot",
+        params: {
+          buy_condition: b.querySelector("#if_pivot_buy_cond").value,
+          sell_condition: b.querySelector("#if_pivot_sell_cond").value,
+          tolerance_pct: Number.isFinite(tolRaw) ? Math.max(0, tolRaw) : 0.25,
+          include_half_levels: b.querySelector("#if_pivot_half_levels").checked ? 1 : 0
+        }
+      });
+    });
+
     b.querySelector("#if_add_supertrend").addEventListener("click", () => {
       const nameRaw = (b.querySelector("#if_supertrend_name").value || "").trim();
       const atrLength = Math.max(1, parseInt(b.querySelector("#if_supertrend_atr_len").value || "10", 10));
@@ -3070,6 +3200,10 @@
       syncDonchianSummary
     );
     bindIndicatorSummarySync(
+      ["#if_pivot_buy_cond", "#if_pivot_sell_cond", "#if_pivot_tolerance", "#if_pivot_half_levels"],
+      syncPivotSummary
+    );
+    bindIndicatorSummarySync(
       ["#if_supertrend_buy_cond", "#if_supertrend_sell_cond", "#if_supertrend_atr_len", "#if_supertrend_mult"],
       syncSupertrendSummary
     );
@@ -3157,6 +3291,10 @@
     bindExec("#if_exec_trail_mode", trailModeInput, "text");
     bindExec("#if_exec_buy_order_type", buyOrderTypeInput, "text");
     bindExec("#if_exec_sell_order_type", sellOrderTypeInput, "text");
+    bindExec("#if_exec_pivot_preorder_enabled", pivotPreorderEnabledInput, "checkbox");
+    bindExec("#if_exec_pivot_offset", pivotPreorderOffsetInput, "text");
+    bindExec("#if_exec_pivot_half", pivotPreorderHalfInput, "checkbox");
+    bindExec("#if_exec_pivot_fallback", pivotPreorderFallbackInput, "text");
     bindExec("#if_exec_trail_amount", trailAmountInput, "text");
     bindExec("#if_exec_trail_mult", trailAtrMultInput, "text");
     bindExec("#if_exec_stoploss_enabled", stoplossEnabledInput, "checkbox");
@@ -3195,6 +3333,17 @@
       const mode = String((modeCtrl && modeCtrl.value) || "fixed");
       if (amountWrap) amountWrap.style.display = mode === "fixed" ? "" : "none";
       if (multWrap) multWrap.style.display = mode === "atr" ? "" : "none";
+    }
+    function syncPivotPreorderPrompt() {
+      const enabledCtrl = b.querySelector("#if_exec_pivot_preorder_enabled");
+      const wraps = [
+        b.querySelector("#if_exec_pivot_offset_wrap"),
+        b.querySelector("#if_exec_pivot_half_wrap"),
+        b.querySelector("#if_exec_pivot_fallback_wrap")
+      ];
+      if (!enabledCtrl) return;
+      const enabled = !!enabledCtrl.checked;
+      wraps.forEach((wrap) => { if (wrap) wrap.style.display = enabled ? "" : "none"; });
     }
     function syncCapPrompt() {
       const capEnabledCtrl = b.querySelector("#if_exec_cap_enabled");
@@ -3347,6 +3496,11 @@
       sellCtrl.addEventListener("change", syncTrailModePrompt);
       sellCtrl.addEventListener("input", syncTrailModePrompt);
     }
+    const pivotPreorderCtrl = b.querySelector("#if_exec_pivot_preorder_enabled");
+    if (pivotPreorderCtrl) {
+      pivotPreorderCtrl.addEventListener("change", syncPivotPreorderPrompt);
+      pivotPreorderCtrl.addEventListener("input", syncPivotPreorderPrompt);
+    }
     const capEnabledCtrl = b.querySelector("#if_exec_cap_enabled");
     if (capEnabledCtrl) {
       capEnabledCtrl.addEventListener("change", syncCapPrompt);
@@ -3379,6 +3533,7 @@
       tfCtrl.value = timeframeInput.value || (tfCtrl.options.length ? tfCtrl.options[0].value : "");
     }
     syncTrailModePrompt();
+    syncPivotPreorderPrompt();
     syncCapPrompt();
     syncCapMathHint();
     syncMaModeSummary();

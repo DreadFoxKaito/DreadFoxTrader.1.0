@@ -50,6 +50,11 @@ from app.brokers.robin_stocks_adapter import (  # noqa: E402
 )
 from app.db import get_broker_connection, read_connection_metadata, read_connection_secrets, set_broker_status  # noqa: E402
 from app.indicator_pipeline import apply_final_candle_policy, heikin_ashi_series as shared_heikin_ashi_series, log_indicator_policy  # noqa: E402
+try:
+    from strategy_forge.pivot_points import calculate_pivot_points, pivot_target_above_price  # noqa: E402
+except Exception:  # pragma: no cover
+    calculate_pivot_points = None  # type: ignore
+    pivot_target_above_price = None  # type: ignore
 
 
 _ACCOUNT_NUMBER: Optional[str] = None
@@ -4422,6 +4427,36 @@ def _round_down_to_cents(value: float) -> float:
         return 0.01
 
 
+def _pivot_preorder_target(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    current_price: float,
+    *,
+    offset: float,
+    include_half_levels: bool,
+    fallback_pct: float,
+) -> Optional[Tuple[str, float]]:
+    if calculate_pivot_points is not None and pivot_target_above_price is not None and len(closes) >= 2:
+        levels = calculate_pivot_points(highs, lows, closes, source_index=-2)
+        target = pivot_target_above_price(
+            levels,
+            float(current_price),
+            offset=max(0.5, float(offset)),
+            include_half_levels=bool(include_half_levels),
+        )
+        if target is not None:
+            label, raw_price = target
+            price = _round_down_to_cents(float(raw_price))
+            if price > float(current_price):
+                return str(label), price
+    if float(fallback_pct) > 0.0:
+        price = _round_down_to_cents(float(current_price) * (1.0 + (float(fallback_pct) / 100.0)))
+        if price > float(current_price):
+            return f"fallback +{float(fallback_pct):g}%", price
+    return None
+
+
 def _resolve_trail_amount(
     *,
     trailing_stop_mode: str,
@@ -5204,6 +5239,10 @@ def main_trading_loop(
     trailing_stop_atr_mult: float,
     buy_order_type: str,
     sell_order_type: str,
+    pivot_preorder_enabled: bool,
+    pivot_preorder_offset: float,
+    pivot_preorder_include_half_levels: bool,
+    pivot_preorder_fallback_pct: float,
     target_gain_pct: float,
     stop_loss_pct: float,
     stoploss_enabled: bool,
@@ -5233,6 +5272,15 @@ def main_trading_loop(
     print(f"Symbols: {symbols}")
     print(f"Rules loaded: {len(rules)}")
     print(f"BUY order type: {buy_order_type} | SELL order type: {sell_order_type}")
+    print(
+        "Pivot preorder target: "
+        + (
+            f"ON offset={float(pivot_preorder_offset):g} half_levels={'YES' if pivot_preorder_include_half_levels else 'NO'} "
+            f"fallback={float(pivot_preorder_fallback_pct):g}%"
+            if bool(pivot_preorder_enabled)
+            else "OFF"
+        )
+    )
     print(f"History include extended hours: {'YES' if include_extended_hours_data else 'NO'}")
     print(f"Allow extended hours orders: {'YES' if allow_extended_hours_orders else 'NO'}")
     print(f"Allow overnight/all-day orders: {'YES' if allow_seamless_overnight_orders else 'NO'}")
@@ -5914,6 +5962,39 @@ def main_trading_loop(
                                         price=float(current_price),
                                         avg_buy_price=0.0,
                                     )
+                                if bool(pivot_preorder_enabled):
+                                    target = _pivot_preorder_target(
+                                        highs,
+                                        lows,
+                                        closes,
+                                        float(current_price),
+                                        offset=float(pivot_preorder_offset),
+                                        include_half_levels=bool(pivot_preorder_include_half_levels),
+                                        fallback_pct=float(pivot_preorder_fallback_pct),
+                                    )
+                                    if target is None:
+                                        print(f"[{symbol}] Pivot preorder skipped: no target above current price.")
+                                    else:
+                                        target_label, target_price = target
+                                        print(
+                                            f"[{symbol}] Pivot preorder -> placing limit SELL for {shares_per_trade} shares "
+                                            f"at ${float(target_price):.2f} ({target_label})."
+                                        )
+                                        sell_resp = place_limit_sell(
+                                            symbol,
+                                            float(shares_per_trade),
+                                            float(target_price),
+                                            extended_hours=extended_order,
+                                            market_session=route_market_session,
+                                            market_hours=route_market_hours,
+                                        )
+                                        if _order_success(sell_resp):
+                                            print(f"[{symbol}] Pivot preorder SELL accepted: resp={sell_resp}")
+                                        else:
+                                            print(
+                                                f"[{symbol}] Pivot preorder SELL rejected: "
+                                                f"{_order_failure_reason(sell_resp)} | resp={sell_resp}"
+                                            )
                             else:
                                 print(f"[{symbol}] BUY order rejected: {_order_failure_reason(resp)} | resp={resp}")
                     except Exception as e:
@@ -6092,6 +6173,10 @@ def main() -> int:
         trailing_stop_atr_mult = 3.0
     buy_order_type = _normalize_order_type(params.get("buy_order_type"), "market")
     sell_order_type = _normalize_order_type(params.get("sell_order_type"), "trailing_stop")
+    pivot_preorder_enabled = _to_bool(params.get("pivot_preorder_enabled", False), False)
+    pivot_preorder_offset = max(0.5, float(params.get("pivot_preorder_offset", 1) or 1))
+    pivot_preorder_include_half_levels = _to_bool(params.get("pivot_preorder_include_half_levels", False), False)
+    pivot_preorder_fallback_pct = max(0.0, float(params.get("pivot_preorder_fallback_pct", 0) or 0))
     target_gain_pct = float(params.get("target_gain_pct", 0.5))
     stop_loss_pct = float(params.get("stop_loss_pct", -0.5))
     stoploss_enabled = bool(params.get("stoploss_enabled", False))
@@ -6134,6 +6219,10 @@ def main() -> int:
         trailing_stop_atr_mult=trailing_stop_atr_mult,
         buy_order_type=buy_order_type,
         sell_order_type=sell_order_type,
+        pivot_preorder_enabled=pivot_preorder_enabled,
+        pivot_preorder_offset=pivot_preorder_offset,
+        pivot_preorder_include_half_levels=pivot_preorder_include_half_levels,
+        pivot_preorder_fallback_pct=pivot_preorder_fallback_pct,
         target_gain_pct=target_gain_pct,
         stop_loss_pct=stop_loss_pct,
         stoploss_enabled=stoploss_enabled,

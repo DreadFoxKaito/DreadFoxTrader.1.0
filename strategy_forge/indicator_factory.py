@@ -6,6 +6,8 @@ from datetime import time
 from typing import Any
 
 from .data_loader import OHLCVData, parse_timestamp
+from .pivot_points import calculate_pivot_points
+from .supertrend import calculate_supertrend
 
 NAN = float("nan")
 
@@ -227,35 +229,20 @@ def supertrend(
     atr_length: int,
     multiplier: float,
 ) -> tuple[list[float], list[float]]:
-    n = len(closes)
-    atr_values = atr(highs, lows, closes, atr_length)
-    trend = _nan_list(n)
-    direction = _nan_list(n)
-    final_upper = _nan_list(n)
-    final_lower = _nan_list(n)
-    for i in range(n):
-        if not is_valid(atr_values[i]):
-            continue
-        hl2 = (float(highs[i]) + float(lows[i])) / 2.0
-        basic_upper = hl2 + float(multiplier) * atr_values[i]
-        basic_lower = hl2 - float(multiplier) * atr_values[i]
-        if i == 0 or not is_valid(final_upper[i - 1]):
-            final_upper[i] = basic_upper
-            final_lower[i] = basic_lower
-            direction[i] = 1.0
-            trend[i] = final_lower[i]
-            continue
-        prev_close = float(closes[i - 1])
-        final_upper[i] = basic_upper if basic_upper < final_upper[i - 1] or prev_close > final_upper[i - 1] else final_upper[i - 1]
-        final_lower[i] = basic_lower if basic_lower > final_lower[i - 1] or prev_close < final_lower[i - 1] else final_lower[i - 1]
-        if float(closes[i]) > final_upper[i - 1]:
-            direction[i] = 1.0
-        elif float(closes[i]) < final_lower[i - 1]:
-            direction[i] = -1.0
-        else:
-            direction[i] = direction[i - 1]
-        trend[i] = final_lower[i] if direction[i] >= 0 else final_upper[i]
+    points = calculate_supertrend(highs, lows, closes, atr_length, multiplier)
+    trend = [float(p.trend) if p.trend is not None else NAN for p in points]
+    direction = [float(p.direction) if p.direction is not None else NAN for p in points]
     return trend, direction
+
+
+def pivot_points(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    source_index: int = -2,
+) -> dict[str, float]:
+    levels = calculate_pivot_points(highs, lows, closes, source_index=int(source_index))
+    return levels.as_dict() if levels is not None else {}
 
 
 def parabolic_sar(
@@ -479,6 +466,13 @@ class IndicatorCache:
             value = relative_volume(self.data.volumes, int(params.get("length") or 20))
         elif name == "donchian":
             value = donchian_channels(self.data.highs, self.data.lows, int(params["lookback"]))
+        elif name == "pivot_points":
+            value = pivot_points(
+                self.data.highs,
+                self.data.lows,
+                self.data.closes,
+                int(params.get("source_index") or -2),
+            )
         elif name == "ichimoku":
             value = ichimoku(
                 self.data.highs,

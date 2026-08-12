@@ -337,25 +337,90 @@
         </div>
 
         <div class="card" style="padding:10px;">
+          <div class="small"><b>Add Pivot Points Rule</b></div>
+          <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
+            <input type="hidden" name="kind" value="pivot" />
+            <input name="name" placeholder="Name (optional)" style="width:100%;" />
+            <select name="pivot_buy_condition">
+              <optgroup label="Price State">
+                <option value="above_p" selected>BUY: Price Above Pivot</option>
+                <option value="above_r1">BUY: Price Above R1</option>
+              </optgroup>
+              <optgroup label="Cross Events">
+                <option value="cross_above_p">BUY: Price Crosses Above Pivot</option>
+                <option value="cross_above_r1">BUY: Price Crosses Above R1</option>
+              </optgroup>
+              <optgroup label="Support / Resistance">
+                <option value="near_support">BUY: Price Near Support</option>
+              </optgroup>
+              <optgroup label="Disabled">
+                <option value="hold">BUY: Hold / Ignore Pivot Points</option>
+              </optgroup>
+            </select>
+            <select name="pivot_sell_condition">
+              <optgroup label="Price State">
+                <option value="below_p" selected>SELL: Price Below Pivot</option>
+                <option value="below_s1">SELL: Price Below S1</option>
+              </optgroup>
+              <optgroup label="Cross Events">
+                <option value="cross_below_p">SELL: Price Crosses Below Pivot</option>
+                <option value="cross_below_s1">SELL: Price Crosses Below S1</option>
+              </optgroup>
+              <optgroup label="Support / Resistance">
+                <option value="near_resistance">SELL: Price Near Resistance</option>
+              </optgroup>
+              <optgroup label="Disabled">
+                <option value="hold">SELL: Hold / Ignore Pivot Points</option>
+              </optgroup>
+            </select>
+            <input name="pivot_tolerance_pct" type="number" min="0" step="0.01" value="0.25" placeholder="Near %" title="Near support/resistance tolerance as a percent of price." style="width:110px;" />
+            <label class="small"><input name="pivot_include_half_levels" type="checkbox" value="1" /> show half-pivot levels</label>
+            <div class="small">Classic pivot points use the previous completed candle to calculate S3, S2, S1, P, R1, R2, and R3. State rules can stay true across candles; cross rules trigger only when price crosses the selected level.</div>
+            <button class="btn primary" type="submit">Save Pivot Rule</button>
+          </form>
+        </div>
+
+        <div class="card" style="padding:10px;">
           <div class="small"><b>Add Supertrend Rule</b></div>
           <form method="post" action="/markets/rules/add" class="row" style="margin-top:8px;">
             <input type="hidden" name="kind" value="supertrend" />
             <input name="name" placeholder="Name (optional)" style="width:100%;" />
-            <input name="supertrend_atr_length" type="number" min="1" step="1" value="10" placeholder="ATR length" style="width:120px;" />
-            <input name="supertrend_multiplier" type="number" min="0.1" step="0.1" value="3.0" placeholder="Multiplier" style="width:120px;" />
+            <input name="supertrend_atr_length" type="number" min="1" step="1" value="10" placeholder="Period" title="Period: number of candles used to calculate Wilder ATR." style="width:120px;" />
+            <input name="supertrend_multiplier" type="number" min="0.1" step="0.1" value="3.0" placeholder="Factor" title="Factor: ATR multiplier. Higher is wider and less sensitive; lower is tighter and more sensitive." style="width:120px;" />
             <select name="supertrend_buy_condition">
-              <option value="trend_up" selected>BUY: trend up</option>
-              <option value="close_above_trend">BUY: close above trend</option>
-              <option value="flip_up">BUY: flip up</option>
-              <option value="hold">BUY: hold</option>
+              <optgroup label="Trend State">
+                <option value="trend_up" selected title="Persistent state: true for every candle while Supertrend is bullish and the active line is below price.">BUY: Trend Is Bullish</option>
+              </optgroup>
+              <optgroup label="Price Relative to Supertrend">
+                <option value="close_above_trend" title="True when the current close is above the active Supertrend line; does not require a reversal.">BUY: Price Closes Above Supertrend</option>
+              </optgroup>
+              <optgroup label="Trend Reversal">
+                <option value="flip_up" title="One-candle event: true only when Supertrend changes from bearish to bullish.">BUY: Trend Flips Bullish</option>
+              </optgroup>
+              <optgroup label="Disabled">
+                <option value="hold" title="Supertrend does not create a buy signal.">BUY: Hold / Ignore Supertrend</option>
+              </optgroup>
             </select>
             <select name="supertrend_sell_condition">
-              <option value="trend_down" selected>SELL: trend down</option>
-              <option value="close_below_trend">SELL: close below trend</option>
-              <option value="flip_down">SELL: flip down</option>
-              <option value="hold">SELL: hold</option>
+              <optgroup label="Trend State">
+                <option value="trend_down" selected title="Persistent state: true for every candle while Supertrend is bearish and the active line is above price.">SELL: Trend Is Bearish</option>
+              </optgroup>
+              <optgroup label="Price Relative to Supertrend">
+                <option value="close_below_trend" title="True when the current close is below the active Supertrend line; does not require a reversal.">SELL: Price Closes Below Supertrend</option>
+              </optgroup>
+              <optgroup label="Trend Reversal">
+                <option value="flip_down" title="One-candle event: true only when Supertrend changes from bullish to bearish.">SELL: Trend Flips Bearish</option>
+              </optgroup>
+              <optgroup label="Disabled">
+                <option value="hold" title="Supertrend does not create a sell signal.">SELL: Hold / Ignore Supertrend</option>
+              </optgroup>
             </select>
-            <div class="small">Supertrend uses ATR bands and trend direction to confirm continuation or flips.</div>
+            <div class="small">
+              Supertrend uses price range and Wilder ATR volatility to maintain a bullish or bearish trend state.
+              During a bullish trend, the active line trails below price. During a bearish trend, it trails above price.
+              Trend Is Bullish/Bearish remains active for the entire trend; Trend Flips Bullish/Bearish triggers only when direction changes.
+              Period controls ATR length: longer is smoother and slower; shorter responds faster. Factor controls ATR distance: higher is wider with fewer flips; lower is tighter with more flips.
+            </div>
             <button class="btn primary" type="submit">Save Supertrend Rule</button>
           </form>
         </div>
