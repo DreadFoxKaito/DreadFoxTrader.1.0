@@ -4619,27 +4619,29 @@ def _market_donchian_channels(
     highs: Optional[list[float]],
     lows: Optional[list[float]],
     lookback: int,
-) -> tuple[list[Optional[float]], list[Optional[float]]]:
+) -> tuple[list[Optional[float]], list[Optional[float]], list[Optional[float]]]:
     n = min(len(highs or []), len(lows or []))
     upper: list[Optional[float]] = [None] * n
     lower: list[Optional[float]] = [None] * n
+    middle: list[Optional[float]] = [None] * n
     ln = max(1, int(lookback))
     if n <= 1:
-        return upper, lower
+        return upper, lower, middle
     high_vals: list[float] = []
     low_vals: list[float] = []
     try:
         high_vals = [float(v) for v in (highs or [])[:n]]
         low_vals = [float(v) for v in (lows or [])[:n]]
     except Exception:
-        return upper, lower
+        return upper, lower, middle
     for i in range(n):
         start = max(0, i - ln)
         if i - start < 1:
             continue
         upper[i] = max(high_vals[start:i])
         lower[i] = min(low_vals[start:i])
-    return upper, lower
+        middle[i] = (float(upper[i]) + float(lower[i])) / 2.0
+    return upper, lower, middle
 
 
 def _donchian_condition_hit(
@@ -4650,8 +4652,25 @@ def _donchian_condition_hit(
     low_now: Optional[float],
     upper: float,
     lower: float,
+    middle: Optional[float] = None,
+    prev_upper: Optional[float] = None,
+    prev_lower: Optional[float] = None,
 ) -> bool:
     c = _normalize_donchian_condition(cond, default="hold")
+    mid = (float(upper) + float(lower)) / 2.0 if middle is None else float(middle)
+    inside = float(lower) <= float(close_now) <= float(upper)
+    slope_up = (
+        prev_upper is not None
+        and prev_lower is not None
+        and float(upper) > float(prev_upper)
+        and float(lower) > float(prev_lower)
+    )
+    slope_down = (
+        prev_upper is not None
+        and prev_lower is not None
+        and float(upper) < float(prev_upper)
+        and float(lower) < float(prev_lower)
+    )
     if c == "hold":
         return False
     if c == "close_above_upper":
@@ -4663,7 +4682,23 @@ def _donchian_condition_hit(
     if c == "low_below_lower":
         return float(low_now if low_now is not None else close_now) < float(lower)
     if c == "inside_channel":
-        return float(lower) <= float(close_now) <= float(upper)
+        return inside
+    if c == "above_mid_inside":
+        return inside and float(close_now) > mid
+    if c == "below_mid_inside":
+        return inside and float(close_now) < mid
+    if c == "channel_slope_up":
+        return slope_up
+    if c == "channel_slope_down":
+        return slope_down
+    if c == "slope_up_above_mid_inside":
+        return slope_up and inside and float(close_now) > mid
+    if c == "slope_up_below_mid_inside":
+        return slope_up and inside and float(close_now) < mid
+    if c == "slope_down_above_mid_inside":
+        return slope_down and inside and float(close_now) > mid
+    if c == "slope_down_below_mid_inside":
+        return slope_down and inside and float(close_now) < mid
     return False
 
 
@@ -6500,6 +6535,14 @@ _DONCHIAN_CONDITION_LABELS: dict[str, str] = {
     "close_below_lower": "close below prior lower channel",
     "low_below_lower": "low breaks prior lower channel",
     "inside_channel": "close inside prior channel",
+    "above_mid_inside": "close above midpoint and inside channel",
+    "below_mid_inside": "close below midpoint and inside channel",
+    "channel_slope_up": "both channel bands are rising",
+    "channel_slope_down": "both channel bands are falling",
+    "slope_up_above_mid_inside": "channel rising and close above midpoint inside channel",
+    "slope_up_below_mid_inside": "channel rising and close below midpoint inside channel",
+    "slope_down_above_mid_inside": "channel falling and close above midpoint inside channel",
+    "slope_down_below_mid_inside": "channel falling and close below midpoint inside channel",
 }
 
 
@@ -6608,6 +6651,32 @@ def _normalize_donchian_condition(value: Any, *, default: str = "hold") -> str:
         "close_breakdown": "close_below_lower",
         "lower_break": "close_below_lower",
         "low_break": "low_below_lower",
+        "above_middle": "above_mid_inside",
+        "above_mid": "above_mid_inside",
+        "close_above_mid": "above_mid_inside",
+        "close_above_middle": "above_mid_inside",
+        "midpoint_long": "above_mid_inside",
+        "below_middle": "below_mid_inside",
+        "below_mid": "below_mid_inside",
+        "close_below_mid": "below_mid_inside",
+        "close_below_middle": "below_mid_inside",
+        "midpoint_short": "below_mid_inside",
+        "slope_up": "channel_slope_up",
+        "bands_rising": "channel_slope_up",
+        "channel_up": "channel_slope_up",
+        "rising_channel": "channel_slope_up",
+        "slope_down": "channel_slope_down",
+        "bands_falling": "channel_slope_down",
+        "channel_down": "channel_slope_down",
+        "falling_channel": "channel_slope_down",
+        "channel_up_above_mid": "slope_up_above_mid_inside",
+        "rising_above_mid": "slope_up_above_mid_inside",
+        "channel_up_below_mid": "slope_up_below_mid_inside",
+        "rising_below_mid": "slope_up_below_mid_inside",
+        "channel_down_above_mid": "slope_down_above_mid_inside",
+        "falling_above_mid": "slope_down_above_mid_inside",
+        "channel_down_below_mid": "slope_down_below_mid_inside",
+        "falling_below_mid": "slope_down_below_mid_inside",
     }
     s = aliases.get(raw, raw)
     if not s:
@@ -8766,10 +8835,13 @@ def _eval_indicator_rule(
         sell_ignored = sell_cond == "hold"
         src_highs = highs if isinstance(highs, list) and len(highs) >= len(closes) else closes
         src_lows = lows if isinstance(lows, list) and len(lows) >= len(closes) else closes
-        upper_series, lower_series = _market_donchian_channels(src_highs, src_lows, lookback)
+        upper_series, lower_series, middle_series = _market_donchian_channels(src_highs, src_lows, lookback)
         upper = upper_series[-1] if upper_series else None
         lower = lower_series[-1] if lower_series else None
-        if upper is None or lower is None:
+        middle = middle_series[-1] if middle_series else None
+        prev_upper = upper_series[-2] if len(upper_series) >= 2 else None
+        prev_lower = lower_series[-2] if len(lower_series) >= 2 else None
+        if upper is None or lower is None or middle is None:
             out["detail"] = f"Donchian({lookback}) unavailable"
             return out
         close_now = float(_to_float_opt(price) or closes[-1])
@@ -8782,6 +8854,9 @@ def _eval_indicator_rule(
             low_now=low_now,
             upper=float(upper),
             lower=float(lower),
+            middle=float(middle),
+            prev_upper=prev_upper,
+            prev_lower=prev_lower,
         )
         sell_ok = True if sell_ignored else _donchian_condition_hit(
             sell_cond,
@@ -8790,13 +8865,16 @@ def _eval_indicator_rule(
             low_now=low_now,
             upper=float(upper),
             lower=float(lower),
+            middle=float(middle),
+            prev_upper=prev_upper,
+            prev_lower=prev_lower,
         )
         out["buy_ok"] = bool(buy_ok)
         out["sell_ok"] = bool(sell_ok)
         out["buy_ignored"] = bool(buy_ignored)
         out["sell_ignored"] = bool(sell_ignored)
         out["value"] = (
-            f"DC{lookback} U={_fmt_market_num(upper,4)} L={_fmt_market_num(lower,4)} "
+            f"DC{lookback} U={_fmt_market_num(upper,4)} M={_fmt_market_num(middle,4)} L={_fmt_market_num(lower,4)} "
             f"P={_fmt_market_num(close_now,4)}"
         )
         out["detail"] = f"buy={buy_cond} sell={sell_cond}"
@@ -9682,7 +9760,7 @@ def _market_chart_svg(
     donchian_lens: list[int] = sorted(
         set(max(1, int(x)) for x in (donchian_lookbacks or []) if int(x) >= 1)
     )
-    donchian_series_map: dict[int, tuple[list[Optional[float]], list[Optional[float]]]] = {}
+    donchian_series_map: dict[int, tuple[list[Optional[float]], list[Optional[float]], list[Optional[float]]]] = {}
     for ln in donchian_lens:
         donchian_series_map[ln] = _market_donchian_channels(highs_syn, lows_syn, ln)
     supertrend_cfgs: list[tuple[int, float]] = sorted(
@@ -9763,8 +9841,8 @@ def _market_chart_svg(
         for v in vals:
             if isinstance(v, (int, float)):
                 price_vals.append(float(v))
-    for upper, lower in donchian_series_map.values():
-        for vals in (upper, lower):
+    for upper, lower, middle in donchian_series_map.values():
+        for vals in (upper, lower, middle):
             for v in vals:
                 if isinstance(v, (int, float)):
                     price_vals.append(float(v))
@@ -10065,7 +10143,7 @@ def _market_chart_svg(
             )
 
     for idx, ln in enumerate(donchian_lens):
-        upper, lower = donchian_series_map.get(ln, ([None] * n, [None] * n))
+        upper, lower, middle = donchian_series_map.get(ln, ([None] * n, [None] * n, [None] * n))
         panel_bg_paths.extend(
             _band_area_paths(
                 upper,
@@ -10076,10 +10154,15 @@ def _market_chart_svg(
         dash = "" if idx == 0 else " stroke-dasharray='4 3'"
         opacity = "0.92" if idx == 0 else "0.70"
         upper_path = _path(upper, pmin, pmax, 0.0, top_h)
+        middle_path = _path(middle, pmin, pmax, 0.0, top_h)
         lower_path = _path(lower, pmin, pmax, 0.0, top_h)
         if upper_path:
             paths.append(
                 f"<path d='{upper_path}' stroke='#14b8a6' stroke-width='1.05' fill='none' opacity='{opacity}'{dash}/>"
+            )
+        if middle_path:
+            paths.append(
+                f"<path d='{middle_path}' stroke='#facc15' stroke-width='0.95' fill='none' opacity='{opacity}' stroke-dasharray='5 3'/>"
             )
         if lower_path:
             paths.append(

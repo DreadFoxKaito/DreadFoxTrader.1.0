@@ -322,16 +322,28 @@
             <select name="donchian_buy_condition">
               <option value="close_above_upper" selected>BUY: close above upper</option>
               <option value="high_above_upper">BUY: high breaks upper</option>
+              <option value="above_mid_inside">BUY: close above midpoint inside channel</option>
+              <option value="channel_slope_up">BUY: both bands rising</option>
+              <option value="slope_up_above_mid_inside">BUY: bands rising + close above midpoint</option>
+              <option value="slope_up_below_mid_inside">BUY: bands rising + close below midpoint</option>
+              <option value="slope_down_above_mid_inside">BUY: bands falling + close above midpoint</option>
+              <option value="slope_down_below_mid_inside">BUY: bands falling + close below midpoint</option>
               <option value="inside_channel">BUY: inside channel</option>
               <option value="hold">BUY: hold</option>
             </select>
             <select name="donchian_sell_condition">
               <option value="close_below_lower" selected>SELL: close below lower</option>
               <option value="low_below_lower">SELL: low breaks lower</option>
+              <option value="below_mid_inside">SELL: close below midpoint inside channel</option>
+              <option value="channel_slope_down">SELL: both bands falling</option>
+              <option value="slope_down_below_mid_inside">SELL: bands falling + close below midpoint</option>
+              <option value="slope_down_above_mid_inside">SELL: bands falling + close above midpoint</option>
+              <option value="slope_up_below_mid_inside">SELL: bands rising + close below midpoint</option>
+              <option value="slope_up_above_mid_inside">SELL: bands rising + close above midpoint</option>
               <option value="inside_channel">SELL: inside channel</option>
               <option value="hold">SELL: hold</option>
             </select>
-            <div class="small">Donchian channels use the prior bars only, so the current candle is not included in its own breakout channel.</div>
+            <div class="small">Donchian channels use prior bars only. The midpoint is halfway between the upper and lower channel. Slope rules compare the current upper/lower bands against the previous candle's bands.</div>
             <button class="btn primary" type="submit">Save Donchian Rule</button>
           </form>
         </div>

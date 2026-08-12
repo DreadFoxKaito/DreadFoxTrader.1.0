@@ -2654,6 +2654,32 @@ def _normalize_donchian_condition(value: Any, *, default: str = "hold") -> str:
         "close_breakdown": "close_below_lower",
         "lower_break": "close_below_lower",
         "low_break": "low_below_lower",
+        "above_middle": "above_mid_inside",
+        "above_mid": "above_mid_inside",
+        "close_above_mid": "above_mid_inside",
+        "close_above_middle": "above_mid_inside",
+        "midpoint_long": "above_mid_inside",
+        "below_middle": "below_mid_inside",
+        "below_mid": "below_mid_inside",
+        "close_below_mid": "below_mid_inside",
+        "close_below_middle": "below_mid_inside",
+        "midpoint_short": "below_mid_inside",
+        "slope_up": "channel_slope_up",
+        "bands_rising": "channel_slope_up",
+        "channel_up": "channel_slope_up",
+        "rising_channel": "channel_slope_up",
+        "slope_down": "channel_slope_down",
+        "bands_falling": "channel_slope_down",
+        "channel_down": "channel_slope_down",
+        "falling_channel": "channel_slope_down",
+        "channel_up_above_mid": "slope_up_above_mid_inside",
+        "rising_above_mid": "slope_up_above_mid_inside",
+        "channel_up_below_mid": "slope_up_below_mid_inside",
+        "rising_below_mid": "slope_up_below_mid_inside",
+        "channel_down_above_mid": "slope_down_above_mid_inside",
+        "falling_above_mid": "slope_down_above_mid_inside",
+        "channel_down_below_mid": "slope_down_below_mid_inside",
+        "falling_below_mid": "slope_down_below_mid_inside",
     }
     allowed = {
         "hold",
@@ -2662,6 +2688,14 @@ def _normalize_donchian_condition(value: Any, *, default: str = "hold") -> str:
         "close_below_lower",
         "low_below_lower",
         "inside_channel",
+        "above_mid_inside",
+        "below_mid_inside",
+        "channel_slope_up",
+        "channel_slope_down",
+        "slope_up_above_mid_inside",
+        "slope_up_below_mid_inside",
+        "slope_down_above_mid_inside",
+        "slope_down_below_mid_inside",
     }
     s = aliases.get(raw, raw)
     if not s:
@@ -2765,25 +2799,27 @@ def _market_donchian_channels(
     highs: Optional[List[float]],
     lows: Optional[List[float]],
     lookback: int,
-) -> Tuple[List[Optional[float]], List[Optional[float]]]:
+) -> Tuple[List[Optional[float]], List[Optional[float]], List[Optional[float]]]:
     n = min(len(highs or []), len(lows or []))
     upper: List[Optional[float]] = [None] * n
     lower: List[Optional[float]] = [None] * n
+    middle: List[Optional[float]] = [None] * n
     ln = max(1, int(lookback))
     if n <= 1:
-        return upper, lower
+        return upper, lower, middle
     try:
         high_vals = [float(v) for v in (highs or [])[:n]]
         low_vals = [float(v) for v in (lows or [])[:n]]
     except Exception:
-        return upper, lower
+        return upper, lower, middle
     for i in range(n):
         start = max(0, i - ln)
         if i - start < 1:
             continue
         upper[i] = max(high_vals[start:i])
         lower[i] = min(low_vals[start:i])
-    return upper, lower
+        middle[i] = (float(upper[i]) + float(lower[i])) / 2.0
+    return upper, lower, middle
 
 
 def _donchian_condition_hit(
@@ -2794,8 +2830,25 @@ def _donchian_condition_hit(
     low_now: Optional[float],
     upper: float,
     lower: float,
+    middle: Optional[float] = None,
+    prev_upper: Optional[float] = None,
+    prev_lower: Optional[float] = None,
 ) -> bool:
     c = _normalize_donchian_condition(cond, default="hold")
+    mid = (float(upper) + float(lower)) / 2.0 if middle is None else float(middle)
+    inside = float(lower) <= float(close_now) <= float(upper)
+    slope_up = (
+        prev_upper is not None
+        and prev_lower is not None
+        and float(upper) > float(prev_upper)
+        and float(lower) > float(prev_lower)
+    )
+    slope_down = (
+        prev_upper is not None
+        and prev_lower is not None
+        and float(upper) < float(prev_upper)
+        and float(lower) < float(prev_lower)
+    )
     if c == "close_above_upper":
         return float(close_now) > float(upper)
     if c == "high_above_upper":
@@ -2805,7 +2858,23 @@ def _donchian_condition_hit(
     if c == "low_below_lower":
         return float(low_now if low_now is not None else close_now) < float(lower)
     if c == "inside_channel":
-        return float(lower) <= float(close_now) <= float(upper)
+        return inside
+    if c == "above_mid_inside":
+        return inside and float(close_now) > mid
+    if c == "below_mid_inside":
+        return inside and float(close_now) < mid
+    if c == "channel_slope_up":
+        return slope_up
+    if c == "channel_slope_down":
+        return slope_down
+    if c == "slope_up_above_mid_inside":
+        return slope_up and inside and float(close_now) > mid
+    if c == "slope_up_below_mid_inside":
+        return slope_up and inside and float(close_now) < mid
+    if c == "slope_down_above_mid_inside":
+        return slope_down and inside and float(close_now) > mid
+    if c == "slope_down_below_mid_inside":
+        return slope_down and inside and float(close_now) < mid
     return False
 
 
@@ -3314,10 +3383,13 @@ def _eval_rule(
         sell_cond = _normalize_donchian_condition(params.get("sell_condition") or "close_below_lower", default="hold")
         buy_ignored = buy_cond == "hold"
         sell_ignored = sell_cond == "hold"
-        upper_vals, lower_vals = _market_donchian_channels(highs[:n] if highs else None, lows[:n] if lows else None, lookback)
+        upper_vals, lower_vals, middle_vals = _market_donchian_channels(highs[:n] if highs else None, lows[:n] if lows else None, lookback)
         upper_now = upper_vals[-1] if upper_vals else None
         lower_now = lower_vals[-1] if lower_vals else None
-        if upper_now is None or lower_now is None:
+        middle_now = middle_vals[-1] if middle_vals else None
+        prev_upper = upper_vals[-2] if len(upper_vals) >= 2 else None
+        prev_lower = lower_vals[-2] if len(lower_vals) >= 2 else None
+        if upper_now is None or lower_now is None or middle_now is None:
             out["detail"] = f"Donchian({lookback}) unavailable"
             return out
         close_now = float(_to_float_opt(price) or closes[n - 1])
@@ -3330,6 +3402,9 @@ def _eval_rule(
             low_now=low_now,
             upper=float(upper_now),
             lower=float(lower_now),
+            middle=float(middle_now),
+            prev_upper=prev_upper,
+            prev_lower=prev_lower,
         )
         sell_ok = True if sell_ignored else _donchian_condition_hit(
             sell_cond,
@@ -3338,12 +3413,15 @@ def _eval_rule(
             low_now=low_now,
             upper=float(upper_now),
             lower=float(lower_now),
+            middle=float(middle_now),
+            prev_upper=prev_upper,
+            prev_lower=prev_lower,
         )
         out["buy_ok"] = bool(buy_ok)
         out["sell_ok"] = bool(sell_ok)
         out["buy_ignored"] = bool(buy_ignored)
         out["sell_ignored"] = bool(sell_ignored)
-        out["value"] = f"DON{lookback} U={_fmt(upper_now,4)} L={_fmt(lower_now,4)} P={_fmt(close_now,4)}"
+        out["value"] = f"DON{lookback} U={_fmt(upper_now,4)} M={_fmt(middle_now,4)} L={_fmt(lower_now,4)} P={_fmt(close_now,4)}"
         out["detail"] = f"buy={buy_cond} sell={sell_cond}"
         return out
 
@@ -4773,16 +4851,16 @@ def _order_market(symbol: str, qty: float, instruction: str, session: str) -> Di
     }
 
 
-def _order_limit(symbol: str, qty: float, instruction: str, session: str, price: float) -> Dict[str, Any]:
+def _order_limit(symbol: str, qty: float, instruction: str, session: str, price: float, *, duration: str = "DAY") -> Dict[str, Any]:
     sess = _normalize_enum(session, SESSION_ENUM, "NORMAL")
-    duration = _normalize_enum("DAY", DURATION_ENUM, "DAY")
+    duration_val = _normalize_enum(duration, DURATION_ENUM, "DAY")
     order_type = _normalize_enum("LIMIT", ORDER_TYPE_ENUM, "LIMIT")
     strategy = _normalize_enum("SINGLE", ORDER_STRATEGY_TYPE_ENUM, "SINGLE")
     limit_price = _round_up_to_cents(price)
     return {
         "orderType": order_type,
         "session": sess,
-        "duration": duration,
+        "duration": duration_val,
         "price": float(limit_price),
         "orderStrategyType": strategy,
         "orderLegCollection": [_order_leg(symbol, qty, instruction)],
@@ -4891,8 +4969,8 @@ def place_limit_buy(symbol: str, qty: float, session: str, price: float) -> http
     return _place_order(order)
 
 
-def place_limit_sell(symbol: str, qty: float, session: str, price: float) -> httpx.Response:
-    order = _order_limit(symbol, qty, "SELL", session, price)
+def place_limit_sell(symbol: str, qty: float, session: str, price: float, *, duration: str = "DAY") -> httpx.Response:
+    order = _order_limit(symbol, qty, "SELL", session, price, duration=duration)
     return _place_order(order)
 
 
@@ -4905,6 +4983,7 @@ def place_limit_with_session_fallback(
     session_state: str,
     session_tag: str,
     allow_seamless_fallback: bool,
+    duration: str = "DAY",
 ) -> httpx.Response:
     sym = str(symbol or "").strip().upper()
     side_norm = str(side or "").strip().lower()
@@ -4914,7 +4993,7 @@ def place_limit_with_session_fallback(
     def _submit(session_name: str) -> httpx.Response:
         if side_norm == "buy":
             return place_limit_buy(sym, float(qty), session_name, float(price))
-        return place_limit_sell(sym, float(qty), session_name, float(price))
+        return place_limit_sell(sym, float(qty), session_name, float(price), duration=duration)
 
     primary = _normalize_enum(session_tag, SESSION_ENUM, "NORMAL")
     if str(session_state or "").strip().lower() == "overnight":
@@ -5829,6 +5908,7 @@ def main_trading_loop(
                                     session_state=session_state,
                                     session_tag=session_tag,
                                     allow_seamless_fallback=bool(allow_seamless_overnight_orders),
+                                    duration="GOOD_TILL_CANCEL",
                                 )
                                 if _order_success(sell_resp):
                                     print(f"[{symbol}] Pivot preorder SELL accepted: resp={sell_resp}")

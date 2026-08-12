@@ -679,12 +679,24 @@
               <select id="if_donchian_buy_cond">
                 <option value="close_above_upper" selected>BUY: close above upper</option>
                 <option value="high_above_upper">BUY: high breaks upper</option>
+                <option value="above_mid_inside">BUY: close above midpoint inside channel</option>
+                <option value="channel_slope_up">BUY: both bands rising</option>
+                <option value="slope_up_above_mid_inside">BUY: bands rising + close above midpoint</option>
+                <option value="slope_up_below_mid_inside">BUY: bands rising + close below midpoint</option>
+                <option value="slope_down_above_mid_inside">BUY: bands falling + close above midpoint</option>
+                <option value="slope_down_below_mid_inside">BUY: bands falling + close below midpoint</option>
                 <option value="inside_channel">BUY: inside channel</option>
                 <option value="hold">BUY: hold</option>
               </select>
               <select id="if_donchian_sell_cond">
                 <option value="close_below_lower" selected>SELL: close below lower</option>
                 <option value="low_below_lower">SELL: low breaks lower</option>
+                <option value="below_mid_inside">SELL: close below midpoint inside channel</option>
+                <option value="channel_slope_down">SELL: both bands falling</option>
+                <option value="slope_down_below_mid_inside">SELL: bands falling + close below midpoint</option>
+                <option value="slope_down_above_mid_inside">SELL: bands falling + close above midpoint</option>
+                <option value="slope_up_below_mid_inside">SELL: bands rising + close below midpoint</option>
+                <option value="slope_up_above_mid_inside">SELL: bands rising + close above midpoint</option>
                 <option value="inside_channel">SELL: inside channel</option>
                 <option value="hold">SELL: hold</option>
               </select>
@@ -1917,7 +1929,15 @@
         high_above_upper: "high breaks prior upper channel",
         close_below_lower: "close below prior lower channel",
         low_below_lower: "low breaks prior lower channel",
-        inside_channel: "close inside prior channel"
+        inside_channel: "close inside prior channel",
+        above_mid_inside: "close above midpoint and inside channel",
+        below_mid_inside: "close below midpoint and inside channel",
+        channel_slope_up: "both channel bands are rising",
+        channel_slope_down: "both channel bands are falling",
+        slope_up_above_mid_inside: "channel rising and close above midpoint inside channel",
+        slope_up_below_mid_inside: "channel rising and close below midpoint inside channel",
+        slope_down_above_mid_inside: "channel falling and close above midpoint inside channel",
+        slope_down_below_mid_inside: "channel falling and close below midpoint inside channel"
       };
       return map[c] || c || "hold";
     }
@@ -2176,7 +2196,7 @@
       host.innerHTML =
         `<b>BUY:</b> ${donchianCondTxt(buyCond.value)}<br>` +
         `<b>SELL:</b> ${donchianCondTxt(sellCond.value)}<br>` +
-        `Settings: ${lookback} prior bars.`;
+        `Settings: ${lookback} prior bars. Midpoint is halfway between the upper and lower channel. Slope compares both bands to the previous candle.`;
     }
 
     function syncPivotSummary() {
