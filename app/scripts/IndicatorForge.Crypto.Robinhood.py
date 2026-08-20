@@ -49,6 +49,12 @@ from app.brokers.robin_stocks_adapter import (  # noqa: E402
 from app.db import get_broker_connection, read_connection_metadata, read_connection_secrets, set_broker_status  # noqa: E402
 from app.indicator_pipeline import heikin_ashi_series as shared_heikin_ashi_series  # noqa: E402
 
+try:
+    from strategy_forge.pivot_points import calculate_pivot_points, pivot_target_above_price  # noqa: E402
+except Exception:
+    calculate_pivot_points = None  # type: ignore
+    pivot_target_above_price = None  # type: ignore
+
 
 stoploss_state: Dict[str, Dict[str, Any]] = {}
 local_trailing_orders: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -3622,6 +3628,79 @@ def _floor_to_cents(value: float) -> float:
     return max(0.0, math.floor(float(value) * 100.0) / 100.0)
 
 
+def _round_up_crypto_price(value: float) -> float:
+    if value <= 0:
+        return 0.00000001
+    return max(0.00000001, math.ceil(float(value) * 100000000.0) / 100000000.0)
+
+
+def _round_down_crypto_price(value: float) -> float:
+    if value <= 0:
+        return 0.00000001
+    return max(0.00000001, math.floor(float(value) * 100000000.0) / 100000000.0)
+
+
+def _pivot_preorder_target(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    current_price: float,
+    *,
+    offset: float,
+    include_half_levels: bool,
+    fallback_pct: float,
+) -> Optional[Tuple[str, float]]:
+    if calculate_pivot_points is not None and pivot_target_above_price is not None and len(closes) >= 2:
+        levels = calculate_pivot_points(highs, lows, closes, source_index=-2)
+        target = pivot_target_above_price(
+            levels,
+            float(current_price),
+            offset=max(0.5, float(offset)),
+            include_half_levels=bool(include_half_levels),
+        )
+        if target is not None:
+            label, raw_price = target
+            price = _round_down_crypto_price(float(raw_price))
+            if price > float(current_price):
+                return str(label), price
+    if float(fallback_pct) > 0.0:
+        price = _round_up_crypto_price(float(current_price) * (1.0 + (float(fallback_pct) / 100.0)))
+        if price > float(current_price):
+            return f"fallback +{float(fallback_pct):g}%", price
+    return None
+
+
+def _estimated_avg_after_buy(current_qty: float, avg_buy_price: float, buy_qty: float, buy_price: float) -> float:
+    if buy_price <= 0:
+        return 0.0
+    if current_qty > 0 and avg_buy_price > 0 and buy_qty > 0:
+        total_qty = float(current_qty) + float(buy_qty)
+        if total_qty > 0:
+            return ((float(current_qty) * float(avg_buy_price)) + (float(buy_qty) * float(buy_price))) / total_qty
+    return float(avg_buy_price) if avg_buy_price > 0 else float(buy_price)
+
+
+def _preorder_profit_target(
+    current_price: float,
+    avg_buy_price: float,
+    profit_pct: float,
+) -> Optional[Tuple[str, float]]:
+    basis = max(float(avg_buy_price) if avg_buy_price > 0 else 0.0, float(current_price))
+    if basis <= 0 or float(profit_pct) <= 0:
+        return None
+    price = _round_up_crypto_price(basis * (1.0 + (float(profit_pct) / 100.0)))
+    if price <= basis or price <= float(current_price):
+        return None
+    return f"profit +{float(profit_pct):g}%", price
+
+
+def _preorder_target_allowed(target_price: Optional[float], current_price: float, avg_buy_price: float) -> bool:
+    if target_price is None or target_price <= 0:
+        return False
+    basis = float(avg_buy_price) if avg_buy_price > 0 else float(current_price)
+    return float(target_price) > float(current_price) and float(target_price) > basis
+
+
 def _record_trade(stats: Dict[str, Any], *, side: str, qty: float, price: float, avg_buy_price: float) -> None:
     stats["trades"] = int(stats.get("trades", 0)) + 1
     if side == "sell" and avg_buy_price > 0 and qty > 0:
@@ -4202,6 +4281,7 @@ def _place_crypto_sell_limit_by_price(symbol: str, amount_dollars: float, limit_
         order_type="limit",
         amountInDollars=float(amount),
         limitPrice=float(limit_price),
+        timeInForce="gtc",
         jsonify=False,
     )
     return _normalize_order_response(resp), float(amount)
@@ -4689,6 +4769,12 @@ def main_trading_loop(
     trailing_stop_atr_mult: float,
     buy_order_type: str,
     sell_order_type: str,
+    pivot_preorder_enabled: bool,
+    pivot_preorder_profit_enabled: bool,
+    pivot_preorder_profit_pct: float,
+    pivot_preorder_offset: float,
+    pivot_preorder_include_half_levels: bool,
+    pivot_preorder_fallback_pct: float,
     target_gain_pct: float,
     stop_loss_pct: float,
     stoploss_enabled: bool,
@@ -4945,6 +5031,50 @@ def main_trading_loop(
                 if avg_buy_price > 0:
                     pnl_pct = ((float(current_price) - avg_buy_price) / avg_buy_price) * 100.0
 
+                estimated_buy_qty = float(buy_order_cost) / float(current_price) if float(current_price) > 0 else 0.0
+                estimated_preorder_avg = _estimated_avg_after_buy(
+                    float(pos_qty),
+                    float(avg_buy_price),
+                    float(estimated_buy_qty) if signal == "BUY" else 0.0,
+                    float(current_price),
+                )
+                pivot_preorder_target = (
+                    _preorder_profit_target(
+                        float(current_price),
+                        float(estimated_preorder_avg),
+                        float(pivot_preorder_profit_pct),
+                    )
+                    if bool(pivot_preorder_profit_enabled)
+                    else None
+                ) or (
+                    _pivot_preorder_target(
+                        highs,
+                        lows,
+                        closes,
+                        float(current_price),
+                        offset=float(pivot_preorder_offset),
+                        include_half_levels=bool(pivot_preorder_include_half_levels),
+                        fallback_pct=float(pivot_preorder_fallback_pct),
+                    )
+                    if bool(pivot_preorder_enabled)
+                    else None
+                )
+                if pivot_preorder_target is not None and not _preorder_target_allowed(
+                    pivot_preorder_target[1],
+                    float(current_price),
+                    float(estimated_preorder_avg),
+                ):
+                    pivot_preorder_target = None
+                pivot_preorder_target_label = pivot_preorder_target[0] if pivot_preorder_target is not None else None
+                pivot_preorder_target_price = pivot_preorder_target[1] if pivot_preorder_target is not None else None
+                pivot_preorder_margin_pct = None
+                pivot_preorder_margin_per_unit = None
+                pivot_preorder_margin_total = None
+                if pivot_preorder_target_price is not None and estimated_preorder_avg > 0.0:
+                    pivot_preorder_margin_per_unit = float(pivot_preorder_target_price) - float(estimated_preorder_avg)
+                    pivot_preorder_margin_pct = (pivot_preorder_margin_per_unit / float(estimated_preorder_avg)) * 100.0
+                    pivot_preorder_margin_total = pivot_preorder_margin_per_unit * float(estimated_buy_qty)
+
                 ma20 = _ma_value(closes, 20)
                 ma78 = _ma_value(closes, 78)
                 ma190 = _ma_value(closes, 190)
@@ -5013,6 +5143,12 @@ def main_trading_loop(
                     trailing_stop_atr_mult=trailing_stop_atr_mult,
                     atr=atr,
                 )
+                pivot_preorder_order_status = (
+                    "preview"
+                    if pivot_preorder_target is not None
+                    else ("no target" if (bool(pivot_preorder_enabled) or bool(pivot_preorder_profit_enabled)) else None)
+                )
+                pivot_preorder_order_reason = None
 
                 if signal == "BUY":
                     _cancel_local_trail(symbol, "sell", "BUY signal")
@@ -5070,6 +5206,78 @@ def main_trading_loop(
                                             price=float(current_price),
                                             avg_buy_price=0.0,
                                         )
+                                    if bool(pivot_preorder_enabled) or bool(pivot_preorder_profit_enabled):
+                                        preorder_avg = _estimated_avg_after_buy(
+                                            float(pos_qty),
+                                            float(avg_buy_price),
+                                            float(est_qty),
+                                            float(current_price),
+                                        )
+                                        preorder_target = _preorder_profit_target(
+                                            float(current_price),
+                                            float(preorder_avg),
+                                            float(pivot_preorder_profit_pct),
+                                        ) if bool(pivot_preorder_profit_enabled) else None
+                                        if preorder_target is None and bool(pivot_preorder_enabled):
+                                            preorder_target = _pivot_preorder_target(
+                                                highs,
+                                                lows,
+                                                closes,
+                                                float(current_price),
+                                                offset=float(pivot_preorder_offset),
+                                                include_half_levels=bool(pivot_preorder_include_half_levels),
+                                                fallback_pct=float(pivot_preorder_fallback_pct),
+                                            )
+                                        if preorder_target is None or not _preorder_target_allowed(
+                                            preorder_target[1],
+                                            float(current_price),
+                                            float(preorder_avg),
+                                        ):
+                                            _log_warn(f"[{symbol}] Pre-sale order skipped: no profitable target above held average.")
+                                            pivot_preorder_order_status = "no target"
+                                        else:
+                                            target_label, target_price = preorder_target
+                                            sell_amount = _normalize_order_amount_dollars(float(est_qty) * float(target_price))
+                                            if sell_amount is None:
+                                                _log_warn(
+                                                    f"[{symbol}] Pre-sale order skipped: target value below "
+                                                    f"{_min_crypto_order_amount_label()}."
+                                                )
+                                                pivot_preorder_order_status = "too small"
+                                            else:
+                                                _log_action(
+                                                    f"[{symbol}] Pre-sale order -> placing limit SELL for "
+                                                    f"~${float(sell_amount):.2f} at ${float(target_price):.8f} ({target_label})."
+                                                )
+                                                sell_resp, used_sell_amount = _place_crypto_sell_limit_by_price(
+                                                    symbol,
+                                                    float(sell_amount),
+                                                    float(target_price),
+                                                )
+                                                pivot_preorder_target_label = target_label
+                                                pivot_preorder_target_price = float(target_price)
+                                                pivot_preorder_margin_pct = (
+                                                    ((float(target_price) - float(preorder_avg)) / float(preorder_avg)) * 100.0
+                                                    if preorder_avg > 0
+                                                    else None
+                                                )
+                                                pivot_preorder_margin_per_unit = (
+                                                    float(target_price) - float(preorder_avg)
+                                                    if preorder_avg > 0
+                                                    else None
+                                                )
+                                                pivot_preorder_margin_total = float(used_sell_amount) - float(used_amount)
+                                                if _order_success(sell_resp):
+                                                    _log_action(f"[{symbol}] Pre-sale limit SELL accepted: resp={sell_resp}")
+                                                    pivot_preorder_order_status = "accepted"
+                                                else:
+                                                    reason = _order_failure_reason(sell_resp)
+                                                    _log_error(
+                                                        f"[{symbol}] Pre-sale limit SELL rejected: "
+                                                        f"{reason} | resp={sell_resp}"
+                                                    )
+                                                    pivot_preorder_order_status = "rejected"
+                                                    pivot_preorder_order_reason = reason
                                 else:
                                     reason = _order_failure_reason(resp)
                                     _log_error(f"[{symbol}] BUY market order rejected: {reason} | resp={resp}")
@@ -5211,6 +5419,20 @@ def main_trading_loop(
                         "atr": atr,
                         "buy_order_type": buy_order_type,
                         "sell_order_type": sell_order_type,
+                        "pivot_preorder_enabled": bool(pivot_preorder_enabled),
+                        "pivot_preorder_profit_enabled": bool(pivot_preorder_profit_enabled),
+                        "pivot_preorder_profit_pct": float(pivot_preorder_profit_pct),
+                        "pivot_preorder_offset": float(pivot_preorder_offset),
+                        "pivot_preorder_include_half_levels": bool(pivot_preorder_include_half_levels),
+                        "pivot_preorder_fallback_pct": float(pivot_preorder_fallback_pct),
+                        "pivot_preorder_target_label": pivot_preorder_target_label,
+                        "pivot_preorder_target_price": pivot_preorder_target_price,
+                        "pivot_preorder_margin_pct": pivot_preorder_margin_pct,
+                        "pivot_preorder_margin_per_share": pivot_preorder_margin_per_unit,
+                        "pivot_preorder_margin_total": pivot_preorder_margin_total,
+                        "pivot_preorder_shares": float(estimated_buy_qty) if (bool(pivot_preorder_enabled) or bool(pivot_preorder_profit_enabled)) else None,
+                        "pivot_preorder_order_status": pivot_preorder_order_status,
+                        "pivot_preorder_order_reason": pivot_preorder_order_reason,
                         "stoploss_enabled": bool(stoploss_enabled),
                         "stoploss_armed": stop_armed,
                         "stoploss_arm_price": stop_arm_price,
@@ -5350,6 +5572,12 @@ def main() -> int:
     target_gain_pct = float(params.get("target_gain_pct", 0.5))
     stop_loss_pct = float(params.get("stop_loss_pct", -0.5))
     stoploss_enabled = _to_bool(params.get("stoploss_enabled", False), False)
+    pivot_preorder_enabled = _to_bool(params.get("pivot_preorder_enabled", False), False)
+    pivot_preorder_profit_enabled = _to_bool(params.get("pivot_preorder_profit_enabled", False), False)
+    pivot_preorder_profit_pct = max(0.0, float(params.get("pivot_preorder_profit_pct", 0) or 0))
+    pivot_preorder_offset = max(0.5, float(params.get("pivot_preorder_offset", 1) or 1))
+    pivot_preorder_include_half_levels = _to_bool(params.get("pivot_preorder_include_half_levels", False), False)
+    pivot_preorder_fallback_pct = max(0.0, float(params.get("pivot_preorder_fallback_pct", 0) or 0))
     portfolio_cap_rule_enabled = _to_bool(params.get("portfolio_cap_rule_enabled", False), False)
     portfolio_cap_mode = str(params.get("portfolio_cap_mode", "divisor_cash_slice")).strip().lower()
     if portfolio_cap_mode not in ("divisor_cash_slice", "percent"):
@@ -5383,6 +5611,12 @@ def main() -> int:
         trailing_stop_atr_mult=trailing_stop_atr_mult,
         buy_order_type=buy_order_type,
         sell_order_type=sell_order_type,
+        pivot_preorder_enabled=pivot_preorder_enabled,
+        pivot_preorder_profit_enabled=pivot_preorder_profit_enabled,
+        pivot_preorder_profit_pct=pivot_preorder_profit_pct,
+        pivot_preorder_offset=pivot_preorder_offset,
+        pivot_preorder_include_half_levels=pivot_preorder_include_half_levels,
+        pivot_preorder_fallback_pct=pivot_preorder_fallback_pct,
         target_gain_pct=target_gain_pct,
         stop_loss_pct=stop_loss_pct,
         stoploss_enabled=stoploss_enabled,

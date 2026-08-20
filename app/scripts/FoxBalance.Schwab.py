@@ -1707,6 +1707,7 @@ def place_limit_buy(symbol: str, qty: float, session: str, price: float) -> http
 
 def place_limit_sell(symbol: str, qty: float, session: str, price: float) -> httpx.Response:
     order = _order_limit(symbol, qty, "SELL", session, price)
+    order["duration"] = _normalize_enum("GOOD_TILL_CANCEL", DURATION_ENUM, "GOOD_TILL_CANCEL")
     return _place_order(order)
 
 

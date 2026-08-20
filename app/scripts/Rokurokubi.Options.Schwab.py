@@ -1442,6 +1442,7 @@ def place_limit_buy(symbol: str, qty: float, session: str, price: float) -> http
 
 def place_limit_sell(symbol: str, qty: float, session: str, price: float) -> httpx.Response:
     order = _order_limit(symbol, qty, "SELL", session, price, "EQUITY")
+    order["duration"] = _normalize_enum("GOOD_TILL_CANCEL", DURATION_ENUM, "GOOD_TILL_CANCEL")
     return _place_order(order)
 
 
@@ -1467,9 +1468,8 @@ def _extract_order_id(resp: httpx.Response) -> Optional[int]:
 
 
 def place_sell_to_open_limit(option_symbol: str, limit_price: float, qty_contracts: int, tif: str) -> Optional[int]:
-    duration = "GOOD_TILL_CANCEL" if tif == "gtc" else "DAY"
     order = _order_limit(option_symbol, qty_contracts, "SELL_TO_OPEN", "NORMAL", limit_price, "OPTION")
-    order["duration"] = _normalize_enum(duration, DURATION_ENUM, "DAY")
+    order["duration"] = _normalize_enum("GOOD_TILL_CANCEL", DURATION_ENUM, "GOOD_TILL_CANCEL")
     resp = _place_order(order)
     if not _order_success(resp):
         return None

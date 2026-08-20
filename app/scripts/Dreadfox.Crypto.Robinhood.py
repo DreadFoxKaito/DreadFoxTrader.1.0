@@ -744,6 +744,7 @@ def check_stoploss_and_sell(
                             order_type="limit",
                             amountInDollars=float(amount_dollars),
                             limitPrice=float(limit_price),
+                            timeInForce="gtc",
                             jsonify=False,
                         )
                         resp = _normalize_order_response(raw_resp)
@@ -855,6 +856,7 @@ def main_trading_loop(
                             order_type="limit",
                             amountInDollars=float(trade_amount),
                             limitPrice=float(limit_price),
+                            timeInForce="gtc",
                             jsonify=False,
                         )
                         resp = _normalize_order_response(raw_resp)

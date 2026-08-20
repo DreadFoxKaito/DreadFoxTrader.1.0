@@ -1279,7 +1279,7 @@ def fox_balance_cycle(
                             order_type="limit",
                             quantity=sell_qty,
                             limitPrice=float(limit_price),
-                            timeInForce="gfd",
+                            timeInForce="gtc",
                             extendedHours=True,
                         ),
                         name=f"adapter.order_sell_limit({top_liq.symbol})",

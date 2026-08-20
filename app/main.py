@@ -2612,10 +2612,25 @@ def _base_algo_form_defs() -> dict[str, dict[str, Any]]:
                 },
                 {
                     "key": "pivot_preorder_enabled",
-                    "label": "Place Pivot Target Sell After BUY",
+                    "label": "Place Limit SELL At Pivot After BUY",
                     "type": "boolean",
                     "default": False,
                     "help": "After a BUY order is accepted, immediately place a one-for-one limit SELL at the selected pivot target above the current price.",
+                },
+                {
+                    "key": "pivot_preorder_profit_enabled",
+                    "label": "Place Limit SELL At Profit % After BUY",
+                    "type": "boolean",
+                    "default": False,
+                    "help": "After a BUY order is accepted, immediately place a one-for-one limit SELL at the configured profit percentage.",
+                },
+                {
+                    "key": "pivot_preorder_profit_pct",
+                    "label": "Pre-Sale Profit Target %",
+                    "type": "number",
+                    "default": 0,
+                    "step": "0.01",
+                    "help": "Optional percent gain target from the estimated held average after the buy. If price is already higher than that basis, targets above current price. When above 0, this target is used before pivot targets.",
                 },
                 {
                     "key": "pivot_preorder_offset",
@@ -2934,10 +2949,25 @@ def _base_algo_form_defs() -> dict[str, dict[str, Any]]:
                 },
                 {
                     "key": "pivot_preorder_enabled",
-                    "label": "Place Pivot Target Sell After BUY",
+                    "label": "Place Limit SELL At Pivot After BUY",
                     "type": "boolean",
                     "default": False,
                     "help": "After a BUY order is accepted, immediately place a one-for-one limit SELL at the selected pivot target above the current price.",
+                },
+                {
+                    "key": "pivot_preorder_profit_enabled",
+                    "label": "Place Limit SELL At Profit % After BUY",
+                    "type": "boolean",
+                    "default": False,
+                    "help": "After a BUY order is accepted, immediately place a one-for-one limit SELL at the configured profit percentage.",
+                },
+                {
+                    "key": "pivot_preorder_profit_pct",
+                    "label": "Pre-Sale Profit Target %",
+                    "type": "number",
+                    "default": 0,
+                    "step": "0.01",
+                    "help": "Optional percent gain target from the estimated held average after the buy. If price is already higher than that basis, targets above current price. When above 0, this target is used before pivot targets.",
                 },
                 {
                     "key": "pivot_preorder_offset",
@@ -18783,16 +18813,24 @@ def run_status(run_id: int):
                 pivot_preorder_param_enabled = False
                 if isinstance(params_obj, dict):
                     raw_pivot_preorder = params_obj.get("pivot_preorder_enabled")
+                    raw_profit_preorder = params_obj.get("pivot_preorder_profit_enabled")
                     if isinstance(raw_pivot_preorder, bool):
                         pivot_preorder_param_enabled = raw_pivot_preorder
                     elif isinstance(raw_pivot_preorder, (int, float)):
                         pivot_preorder_param_enabled = float(raw_pivot_preorder) != 0.0
                     else:
                         pivot_preorder_param_enabled = str(raw_pivot_preorder or "").strip().lower() in ("1", "true", "yes", "on", "y")
+                    if isinstance(raw_profit_preorder, bool):
+                        pivot_preorder_param_enabled = pivot_preorder_param_enabled or raw_profit_preorder
+                    elif isinstance(raw_profit_preorder, (int, float)):
+                        pivot_preorder_param_enabled = pivot_preorder_param_enabled or float(raw_profit_preorder) != 0.0
+                    else:
+                        pivot_preorder_param_enabled = pivot_preorder_param_enabled or str(raw_profit_preorder or "").strip().lower() in ("1", "true", "yes", "on", "y")
                 show_pivot_preorder_cols = pivot_preorder_param_enabled or any(
                     isinstance(row, dict)
                     and (
                         bool(row.get("pivot_preorder_enabled"))
+                        or bool(row.get("pivot_preorder_profit_enabled"))
                         or row.get("pivot_preorder_target_price") is not None
                         or row.get("pivot_preorder_order_status") is not None
                     )
@@ -18936,7 +18974,7 @@ def run_status(run_id: int):
                         f"<td>{price_html}</td>",
                     ]
                     if show_pivot_preorder_cols:
-                        pivot_enabled = bool(t.get("pivot_preorder_enabled"))
+                        pivot_enabled = bool(t.get("pivot_preorder_enabled")) or bool(t.get("pivot_preorder_profit_enabled"))
                         pivot_label = str(t.get("pivot_preorder_target_label") or "").strip()
                         pivot_price = _to_float(t.get("pivot_preorder_target_price"))
                         pivot_margin_pct = _to_float(t.get("pivot_preorder_margin_pct"))
@@ -18950,7 +18988,7 @@ def run_status(run_id: int):
                             margin_cell = "—"
                             order_cell = "—"
                         elif pivot_price is None:
-                            target_cell = "No higher pivot"
+                            target_cell = "No target"
                             margin_cell = "—"
                             order_cell = html.escape(pivot_status or "no target")
                         else:

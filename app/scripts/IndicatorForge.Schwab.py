@@ -4184,6 +4184,37 @@ def _pivot_preorder_target(
     return None
 
 
+def _estimated_avg_after_buy(current_qty: float, avg_buy_price: float, buy_qty: float, buy_price: float) -> float:
+    if buy_price <= 0:
+        return 0.0
+    if current_qty > 0 and avg_buy_price > 0 and buy_qty > 0:
+        total_qty = float(current_qty) + float(buy_qty)
+        if total_qty > 0:
+            return ((float(current_qty) * float(avg_buy_price)) + (float(buy_qty) * float(buy_price))) / total_qty
+    return float(avg_buy_price) if avg_buy_price > 0 else float(buy_price)
+
+
+def _preorder_profit_target(
+    current_price: float,
+    avg_buy_price: float,
+    profit_pct: float,
+) -> Optional[Tuple[str, float]]:
+    basis = max(float(avg_buy_price) if avg_buy_price > 0 else 0.0, float(current_price))
+    if basis <= 0 or float(profit_pct) <= 0:
+        return None
+    price = _round_up_to_cents(basis * (1.0 + (float(profit_pct) / 100.0)))
+    if price <= basis or price <= float(current_price):
+        return None
+    return f"profit +{float(profit_pct):g}%", price
+
+
+def _preorder_target_allowed(target_price: Optional[float], current_price: float, avg_buy_price: float) -> bool:
+    if target_price is None or target_price <= 0:
+        return False
+    basis = float(avg_buy_price) if avg_buy_price > 0 else float(current_price)
+    return float(target_price) > float(current_price) and float(target_price) > basis
+
+
 def _resolve_trail_amount(
     *,
     trailing_stop_mode: str,
@@ -4969,7 +5000,7 @@ def place_limit_buy(symbol: str, qty: float, session: str, price: float) -> http
     return _place_order(order)
 
 
-def place_limit_sell(symbol: str, qty: float, session: str, price: float, *, duration: str = "DAY") -> httpx.Response:
+def place_limit_sell(symbol: str, qty: float, session: str, price: float, *, duration: str = "GOOD_TILL_CANCEL") -> httpx.Response:
     order = _order_limit(symbol, qty, "SELL", session, price, duration=duration)
     return _place_order(order)
 
@@ -5319,6 +5350,8 @@ def main_trading_loop(
     buy_order_type: str,
     sell_order_type: str,
     pivot_preorder_enabled: bool,
+    pivot_preorder_profit_enabled: bool,
+    pivot_preorder_profit_pct: float,
     pivot_preorder_offset: float,
     pivot_preorder_include_half_levels: bool,
     pivot_preorder_fallback_pct: float,
@@ -5347,11 +5380,15 @@ def main_trading_loop(
     print(f"Rules loaded: {len(rules)}")
     print(f"BUY order type: {buy_order_type} | SELL order type: {sell_order_type}")
     print(
-        "Pivot preorder target: "
+        "Pre-sale order target: "
         + (
-            f"ON offset={float(pivot_preorder_offset):g} half_levels={'YES' if pivot_preorder_include_half_levels else 'NO'} "
-            f"fallback={float(pivot_preorder_fallback_pct):g}%"
-            if bool(pivot_preorder_enabled)
+            f"pivot={'ON' if pivot_preorder_enabled else 'OFF'} "
+            f"profit={'ON' if pivot_preorder_profit_enabled else 'OFF'} "
+            f"profit_pct={float(pivot_preorder_profit_pct):g}% "
+            f"pivot_offset={float(pivot_preorder_offset):g} "
+            f"half_levels={'YES' if pivot_preorder_include_half_levels else 'NO'} "
+            f"pivot_fallback={float(pivot_preorder_fallback_pct):g}%"
+            if bool(pivot_preorder_enabled) or bool(pivot_preorder_profit_enabled)
             else "OFF"
         )
     )
@@ -5638,7 +5675,21 @@ def main_trading_loop(
                 rsi = _rsi(closes, 14)
                 drsi = _rsi_derivative(closes, 14)
                 atr = _atr_from_historicals(hist, period=14)
+                estimated_preorder_avg = _estimated_avg_after_buy(
+                    float(pos_qty),
+                    float(avg_buy_price),
+                    float(shares_per_trade) if execution_signal == "BUY" else 0.0,
+                    float(current_price),
+                )
                 pivot_preorder_target = (
+                    _preorder_profit_target(
+                        float(current_price),
+                        float(estimated_preorder_avg),
+                        float(pivot_preorder_profit_pct),
+                    )
+                    if bool(pivot_preorder_profit_enabled)
+                    else None
+                ) or (
                     _pivot_preorder_target(
                         highs,
                         lows,
@@ -5651,6 +5702,12 @@ def main_trading_loop(
                     if bool(pivot_preorder_enabled)
                     else None
                 )
+                if pivot_preorder_target is not None and not _preorder_target_allowed(
+                    pivot_preorder_target[1],
+                    float(current_price),
+                    float(estimated_preorder_avg),
+                ):
+                    pivot_preorder_target = None
                 pivot_preorder_target_label = pivot_preorder_target[0] if pivot_preorder_target is not None else None
                 pivot_preorder_target_price = pivot_preorder_target[1] if pivot_preorder_target is not None else None
                 pivot_preorder_margin_pct = None
@@ -5708,6 +5765,8 @@ def main_trading_loop(
                         "buy_order_type": buy_order_type,
                         "sell_order_type": sell_order_type,
                         "pivot_preorder_enabled": bool(pivot_preorder_enabled),
+                        "pivot_preorder_profit_enabled": bool(pivot_preorder_profit_enabled),
+                        "pivot_preorder_profit_pct": float(pivot_preorder_profit_pct),
                         "pivot_preorder_offset": float(pivot_preorder_offset),
                         "pivot_preorder_include_half_levels": bool(pivot_preorder_include_half_levels),
                         "pivot_preorder_fallback_pct": float(pivot_preorder_fallback_pct),
@@ -5716,8 +5775,8 @@ def main_trading_loop(
                         "pivot_preorder_margin_pct": pivot_preorder_margin_pct,
                         "pivot_preorder_margin_per_share": pivot_preorder_margin_per_share,
                         "pivot_preorder_margin_total": pivot_preorder_margin_total,
-                        "pivot_preorder_shares": float(shares_per_trade) if bool(pivot_preorder_enabled) else None,
-                        "pivot_preorder_order_status": "preview" if pivot_preorder_target is not None else ("no target" if bool(pivot_preorder_enabled) else None),
+                        "pivot_preorder_shares": float(shares_per_trade) if (bool(pivot_preorder_enabled) or bool(pivot_preorder_profit_enabled)) else None,
+                        "pivot_preorder_order_status": "preview" if pivot_preorder_target is not None else ("no target" if (bool(pivot_preorder_enabled) or bool(pivot_preorder_profit_enabled)) else None),
                         "ma20": ma20,
                         "ma78": ma78,
                         "ma150": ma190,
@@ -5890,14 +5949,14 @@ def main_trading_loop(
                                 price=float(current_price),
                                 avg_buy_price=0.0,
                             )
-                        if resp is not None and _order_success(resp) and bool(pivot_preorder_enabled):
+                        if resp is not None and _order_success(resp) and (bool(pivot_preorder_enabled) or bool(pivot_preorder_profit_enabled)):
                             if pivot_preorder_target is None:
-                                print(f"[{symbol}] Pivot preorder skipped: no target above current price.")
+                                print(f"[{symbol}] Pre-sale order skipped: no profitable target above held average.")
                                 tickers_status[-1]["pivot_preorder_order_status"] = "no target"
                             else:
                                 target_label, target_price = pivot_preorder_target
                                 print(
-                                    f"[{symbol}] Pivot preorder -> placing limit SELL for {shares_per_trade} shares "
+                                    f"[{symbol}] Pre-sale order -> placing limit SELL for {shares_per_trade} shares "
                                     f"at ${float(target_price):.2f} ({target_label})."
                                 )
                                 sell_resp = place_limit_with_session_fallback(
@@ -5911,10 +5970,10 @@ def main_trading_loop(
                                     duration="GOOD_TILL_CANCEL",
                                 )
                                 if _order_success(sell_resp):
-                                    print(f"[{symbol}] Pivot preorder SELL accepted: resp={sell_resp}")
+                                    print(f"[{symbol}] Pre-sale limit SELL accepted: resp={sell_resp}")
                                     tickers_status[-1]["pivot_preorder_order_status"] = "accepted"
                                 else:
-                                    print(f"[{symbol}] Pivot preorder SELL rejected: {sell_resp.text}")
+                                    print(f"[{symbol}] Pre-sale limit SELL rejected: {sell_resp.text}")
                                     tickers_status[-1]["pivot_preorder_order_status"] = "rejected"
                                     tickers_status[-1]["pivot_preorder_order_reason"] = str(sell_resp.text or "")
                     except Exception as e:
@@ -6111,6 +6170,8 @@ def main() -> int:
     buy_order_type = _normalize_order_type(params.get("buy_order_type", "market"), default="market")
     sell_order_type = _normalize_order_type(params.get("sell_order_type", "trailing_stop"), default="trailing_stop")
     pivot_preorder_enabled = _to_bool(params.get("pivot_preorder_enabled", False), False)
+    pivot_preorder_profit_enabled = _to_bool(params.get("pivot_preorder_profit_enabled", False), False)
+    pivot_preorder_profit_pct = max(0.0, float(params.get("pivot_preorder_profit_pct", 0) or 0))
     pivot_preorder_offset = max(0.5, float(params.get("pivot_preorder_offset", 1) or 1))
     pivot_preorder_include_half_levels = _to_bool(params.get("pivot_preorder_include_half_levels", False), False)
     pivot_preorder_fallback_pct = max(0.0, float(params.get("pivot_preorder_fallback_pct", 0) or 0))
@@ -6255,6 +6316,8 @@ def main() -> int:
         buy_order_type=buy_order_type,
         sell_order_type=sell_order_type,
         pivot_preorder_enabled=pivot_preorder_enabled,
+        pivot_preorder_profit_enabled=pivot_preorder_profit_enabled,
+        pivot_preorder_profit_pct=pivot_preorder_profit_pct,
         pivot_preorder_offset=pivot_preorder_offset,
         pivot_preorder_include_half_levels=pivot_preorder_include_half_levels,
         pivot_preorder_fallback_pct=pivot_preorder_fallback_pct,

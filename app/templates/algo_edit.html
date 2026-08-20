@@ -394,6 +394,8 @@
     const buyOrderTypeInput = getInput("buy_order_type");
     const sellOrderTypeInput = getInput("sell_order_type");
     const pivotPreorderEnabledInput = getInput("pivot_preorder_enabled");
+    const pivotPreorderProfitEnabledInput = getInput("pivot_preorder_profit_enabled");
+    const pivotPreorderProfitInput = getInput("pivot_preorder_profit_pct");
     const pivotPreorderOffsetInput = getInput("pivot_preorder_offset");
     const pivotPreorderHalfInput = getInput("pivot_preorder_include_half_levels");
     const pivotPreorderFallbackInput = getInput("pivot_preorder_fallback_pct");
@@ -1145,9 +1147,11 @@
 
         ${pivotPreorderEnabledInput ? `
         <div style="margin-top:16px;">
-          <h4 style="margin:0 0 8px 0; font-size:0.95em; color:#666;">Pivot Preorder Targets</h4>
+          <h4 style="margin:0 0 8px 0; font-size:0.95em; color:#666;">Pre-sale orders settings</h4>
           <div class="grid" style="grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px;">
-            <div><label><input id="if_exec_pivot_preorder_enabled" type="checkbox" /> Place Limit SELL At Pivot After BUY</label><div class="small">After a BUY order is accepted, place a matching limit SELL at a pivot level above current price.</div></div>
+            <div><label><input id="if_exec_pivot_preorder_enabled" type="checkbox" /> Place Limit SELL At Pivot After BUY</label><div class="small">Uses calculated pivot lines above current price.</div></div>
+            <div><label><input id="if_exec_pivot_profit_enabled" type="checkbox" /> Place Limit SELL At Profit % After BUY</label><div class="small">Uses a preset gain target above average/current price.</div></div>
+            <div id="if_exec_pivot_profit_wrap"><label>Profit Target %</label><input id="if_exec_pivot_profit" type="number" min="0" step="0.01" /><div class="small">Uses the higher of estimated average or current price.</div></div>
             <div id="if_exec_pivot_offset_wrap"><label>Pivot Steps Above Price</label><input id="if_exec_pivot_offset" type="number" min="0.5" step="0.5" /></div>
             <div id="if_exec_pivot_half_wrap"><label><input id="if_exec_pivot_half" type="checkbox" /> Use Half-Pivot Levels</label><div class="small">Adds midpoint targets between S/P/R levels.</div></div>
             <div id="if_exec_pivot_fallback_wrap"><label>Fallback % Above Price</label><input id="if_exec_pivot_fallback" type="number" min="0" step="0.01" /><div class="small">0 skips fallback if no higher pivot exists.</div></div>
@@ -3312,6 +3316,8 @@
     bindExec("#if_exec_buy_order_type", buyOrderTypeInput, "text");
     bindExec("#if_exec_sell_order_type", sellOrderTypeInput, "text");
     bindExec("#if_exec_pivot_preorder_enabled", pivotPreorderEnabledInput, "checkbox");
+    bindExec("#if_exec_pivot_profit_enabled", pivotPreorderProfitEnabledInput, "checkbox");
+    bindExec("#if_exec_pivot_profit", pivotPreorderProfitInput, "text");
     bindExec("#if_exec_pivot_offset", pivotPreorderOffsetInput, "text");
     bindExec("#if_exec_pivot_half", pivotPreorderHalfInput, "checkbox");
     bindExec("#if_exec_pivot_fallback", pivotPreorderFallbackInput, "text");
@@ -3355,15 +3361,18 @@
       if (multWrap) multWrap.style.display = mode === "atr" ? "" : "none";
     }
     function syncPivotPreorderPrompt() {
-      const enabledCtrl = b.querySelector("#if_exec_pivot_preorder_enabled");
-      const wraps = [
+      const pivotCtrl = b.querySelector("#if_exec_pivot_preorder_enabled");
+      const profitCtrl = b.querySelector("#if_exec_pivot_profit_enabled");
+      const pivotWraps = [
         b.querySelector("#if_exec_pivot_offset_wrap"),
         b.querySelector("#if_exec_pivot_half_wrap"),
         b.querySelector("#if_exec_pivot_fallback_wrap")
       ];
-      if (!enabledCtrl) return;
-      const enabled = !!enabledCtrl.checked;
-      wraps.forEach((wrap) => { if (wrap) wrap.style.display = enabled ? "" : "none"; });
+      const profitWrap = b.querySelector("#if_exec_pivot_profit_wrap");
+      const pivotEnabled = !!(pivotCtrl && pivotCtrl.checked);
+      const profitEnabled = !!(profitCtrl && profitCtrl.checked);
+      pivotWraps.forEach((wrap) => { if (wrap) wrap.style.display = pivotEnabled ? "" : "none"; });
+      if (profitWrap) profitWrap.style.display = profitEnabled ? "" : "none";
     }
     function syncCapPrompt() {
       const capEnabledCtrl = b.querySelector("#if_exec_cap_enabled");
@@ -3520,6 +3529,11 @@
     if (pivotPreorderCtrl) {
       pivotPreorderCtrl.addEventListener("change", syncPivotPreorderPrompt);
       pivotPreorderCtrl.addEventListener("input", syncPivotPreorderPrompt);
+    }
+    const pivotProfitCtrl = b.querySelector("#if_exec_pivot_profit_enabled");
+    if (pivotProfitCtrl) {
+      pivotProfitCtrl.addEventListener("change", syncPivotPreorderPrompt);
+      pivotProfitCtrl.addEventListener("input", syncPivotPreorderPrompt);
     }
     const capEnabledCtrl = b.querySelector("#if_exec_cap_enabled");
     if (capEnabledCtrl) {

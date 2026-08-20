@@ -964,7 +964,7 @@ def place_sell_to_open_limit(
         expirationDate=exp,
         strike=str(strike),
         optionType="call",
-        timeInForce=tif,
+        timeInForce="gtc",
     )
 
 
@@ -1265,7 +1265,7 @@ def check_stoploss_and_sell(
                         order_type="limit",
                         quantity=sell_qty,
                         limitPrice=float(limit_price),
-                        timeInForce="gfd",
+                        timeInForce="gtc",
                         extendedHours=True,
                     )
                 elif session_state == "regular":
