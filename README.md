@@ -18,6 +18,18 @@ This project is built with:
 
 ---
 
+# Use Restrictions
+
+This software is provided for personal use by individual users only.
+
+Companies, corporations, partnerships, funds, institutions, and other business or commercial entities are prohibited from using, copying, modifying, distributing, hosting, deploying, or operating this software.
+
+This software may not be used by any individual who owns, controls, or beneficially owns more than 10% of any publicly traded company.
+
+No commercial, institutional, corporate, or business use is permitted without prior written permission from the repository owner.
+
+---
+
 # 🏗 Architecture Overview
 
 The system is organized into four core domains:
