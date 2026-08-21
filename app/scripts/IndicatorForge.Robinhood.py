@@ -885,6 +885,13 @@ def _order_market_hours_for_state(state: str) -> Optional[str]:
     return None
 
 
+def _preorder_time_in_force_for_state(state: str) -> str:
+    session = str(state or "").strip().lower()
+    if session in ("regular", "extended", "premarket", "after_hours", "overnight"):
+        return "gfd"
+    return "gtc"
+
+
 def _fetch_historicals_like_schwab(
     *,
     symbol: str,
@@ -6150,7 +6157,7 @@ def main_trading_loop(
                                             extended_hours=extended_order,
                                             market_session=route_market_session,
                                             market_hours=route_market_hours,
-                                            time_in_force="gtc",
+                                            time_in_force=_preorder_time_in_force_for_state(session_state),
                                         )
                                         if _order_success(sell_resp):
                                             print(f"[{symbol}] Pre-sale limit SELL accepted: resp={sell_resp}")

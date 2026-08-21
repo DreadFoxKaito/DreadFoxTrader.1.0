@@ -33,20 +33,36 @@ def _calls_named(tree: ast.AST, names: set[str]) -> list[ast.Call]:
 
 
 class PivotPreorderTimeInForceTests(unittest.TestCase):
-    def test_robinhood_pivot_preorder_sell_is_gtc(self):
+    def test_robinhood_pivot_preorder_sell_uses_session_time_in_force(self):
         src = _source("app/scripts/IndicatorForge.Robinhood.py")
         block = _block_after_marker(src, "Pre-sale order -> placing limit SELL")
 
         self.assertIn("sell_resp = place_limit_sell(", block)
-        self.assertIn('time_in_force="gtc"', block)
+        self.assertIn("market_session=route_market_session", block)
+        self.assertIn("market_hours=route_market_hours", block)
+        self.assertIn("time_in_force=_preorder_time_in_force_for_state(session_state)", block)
 
-    def test_schwab_pivot_preorder_sell_is_good_till_cancel(self):
+    def test_schwab_pivot_preorder_sell_uses_session_duration(self):
         src = _source("app/scripts/IndicatorForge.Schwab.py")
         block = _block_after_marker(src, "Pre-sale order -> placing limit SELL")
 
         self.assertIn("sell_resp = place_limit_with_session_fallback(", block)
         self.assertIn('side="sell"', block)
-        self.assertIn('duration="GOOD_TILL_CANCEL"', block)
+        self.assertIn("session_state=session_state", block)
+        self.assertIn("session_tag=session_tag", block)
+        self.assertIn("duration=_preorder_duration_for_state(session_state)", block)
+
+    def test_robinhood_preorder_time_in_force_is_day_for_detected_sessions(self):
+        src = _source("app/scripts/IndicatorForge.Robinhood.py")
+
+        self.assertIn('if session in ("regular", "extended", "premarket", "after_hours", "overnight"):', src)
+        self.assertIn('return "gfd"', src)
+
+    def test_schwab_preorder_duration_is_day_for_detected_sessions(self):
+        src = _source("app/scripts/IndicatorForge.Schwab.py")
+
+        self.assertIn('if session in ("regular", "extended", "overnight"):', src)
+        self.assertIn('return "DAY"', src)
 
     def test_schwab_limit_sell_default_duration_is_good_till_cancel(self):
         src = _source("app/scripts/IndicatorForge.Schwab.py")

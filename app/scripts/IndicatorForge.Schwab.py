@@ -1020,6 +1020,13 @@ def _order_session_for_state(state: str) -> str:
     return _normalize_enum(session, SESSION_ENUM, "NORMAL")
 
 
+def _preorder_duration_for_state(state: str) -> str:
+    session = str(state or "").strip().lower()
+    if session in ("regular", "extended", "overnight"):
+        return "DAY"
+    return "GOOD_TILL_CANCEL"
+
+
 def _execution_state_from_market(
     market_state: str,
     *,
@@ -5967,7 +5974,7 @@ def main_trading_loop(
                                     session_state=session_state,
                                     session_tag=session_tag,
                                     allow_seamless_fallback=bool(allow_seamless_overnight_orders),
-                                    duration="GOOD_TILL_CANCEL",
+                                    duration=_preorder_duration_for_state(session_state),
                                 )
                                 if _order_success(sell_resp):
                                     print(f"[{symbol}] Pre-sale limit SELL accepted: resp={sell_resp}")
